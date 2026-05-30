@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
+import { FilePreviewProvider } from "@/components/inline-badge";
 import { enqueueComposerPrefill } from "@/features/composer/prefill-queue";
 import { getShortcut } from "@/features/shortcuts/registry";
 import type {
@@ -634,35 +635,40 @@ export const WorkspacePanelContainer = memo(function WorkspacePanelContainer({
 	}, [displayedWorkspaceId, queryClient]);
 
 	return (
-		<WorkspacePanel
-			workspace={workspace}
-			sessions={sessions}
-			selectedSessionId={selectedSessionIdForPanel}
-			sessionDisplayProviders={sessionDisplayProviders}
-			sessionPanes={sessionPanes}
-			loadingWorkspace={loadingWorkspace}
-			loadingSession={loadingSession}
-			refreshingWorkspace={refreshingWorkspace}
-			refreshingSession={refreshingSession}
-			sending={sending}
-			busySessionIds={busySessionIds}
-			interactionRequiredSessionIds={interactionRequiredSessionIds}
-			contextPreviewCard={contextPreviewCard}
-			contextPreviewActive={contextPreviewActive}
-			onSelectSession={handleSelectSession}
-			onSelectContextPreview={onSelectContextPreview}
-			onCloseContextPreview={onCloseContextPreview}
-			onPrefetchSession={handlePrefetchSession}
-			onSessionsChanged={handleSessionsChanged}
-			onSessionRenamed={handleSessionRenamed}
-			onWorkspaceChanged={handleWorkspaceChanged}
-			onRequestCloseSession={onRequestCloseSession}
-			headerActions={headerActions}
-			headerLeading={headerLeading}
-			newSessionShortcut={getShortcut(settings.shortcuts, "session.new")}
-			missingScriptTypes={missingScriptTypes}
-			onInitializeScript={handleInitializeScript}
-			changeRequest={workspaceChangeRequest}
-		/>
+		<FilePreviewProvider
+			workspaceRootPath={workspace?.rootPath ?? null}
+			workspaceId={displayedWorkspaceId}
+		>
+			<WorkspacePanel
+				workspace={workspace}
+				sessions={sessions}
+				selectedSessionId={selectedSessionIdForPanel}
+				sessionDisplayProviders={sessionDisplayProviders}
+				sessionPanes={sessionPanes}
+				loadingWorkspace={loadingWorkspace}
+				loadingSession={loadingSession}
+				refreshingWorkspace={refreshingWorkspace}
+				refreshingSession={refreshingSession}
+				sending={sending}
+				busySessionIds={busySessionIds}
+				interactionRequiredSessionIds={interactionRequiredSessionIds}
+				contextPreviewCard={contextPreviewCard}
+				contextPreviewActive={contextPreviewActive}
+				onSelectSession={handleSelectSession}
+				onSelectContextPreview={onSelectContextPreview}
+				onCloseContextPreview={onCloseContextPreview}
+				onPrefetchSession={handlePrefetchSession}
+				onSessionsChanged={handleSessionsChanged}
+				onSessionRenamed={handleSessionRenamed}
+				onWorkspaceChanged={handleWorkspaceChanged}
+				onRequestCloseSession={onRequestCloseSession}
+				headerActions={headerActions}
+				headerLeading={headerLeading}
+				newSessionShortcut={getShortcut(settings.shortcuts, "session.new")}
+				missingScriptTypes={missingScriptTypes}
+				onInitializeScript={handleInitializeScript}
+				changeRequest={workspaceChangeRequest}
+			/>
+		</FilePreviewProvider>
 	);
 });

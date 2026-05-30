@@ -21,6 +21,7 @@ import { type ReactNode, useMemo } from "react";
 import {
 	createFilePreviewLoader,
 	InlineBadge,
+	useFilePreviewContext,
 } from "@/components/inline-badge";
 import { basename } from "@/lib/path-util";
 
@@ -38,9 +39,10 @@ function ComposerFileBadge({
 }) {
 	const [editor] = useLexicalComposerContext();
 	const fileName = basename(filePath);
+	const previewCtx = useFilePreviewContext();
 	const previewLoader = useMemo(
-		() => createFilePreviewLoader(filePath),
-		[filePath],
+		() => createFilePreviewLoader(filePath, previewCtx ?? undefined),
+		[filePath, previewCtx],
 	);
 
 	return (
