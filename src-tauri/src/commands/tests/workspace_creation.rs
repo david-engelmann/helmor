@@ -1552,12 +1552,18 @@ fn pr_lookups_short_circuit_for_initializing_workspace_without_network() {
     // reached the network layer here (no GitHub auth in tests), they'd
     // fail or return an "unavailable" row that would flicker when the
     // real query lands post-ready.
-    let pr = crate::github_pr::lookup_workspace_pr(&prepared.workspace_id)
-        .expect("lookup_workspace_pr should succeed for initializing workspace");
+    let pr = crate::github_pr::lookup_workspace_pr(
+        &prepared.workspace_id,
+        crate::forge::command::ForgeRunner::local(),
+    )
+    .expect("lookup_workspace_pr should succeed for initializing workspace");
     assert!(pr.is_none(), "fresh workspace cannot have a PR yet");
 
-    let status = crate::github_pr::lookup_workspace_pr_action_status(&prepared.workspace_id)
-        .expect("lookup_workspace_pr_action_status should succeed for initializing workspace");
+    let status = crate::github_pr::lookup_workspace_pr_action_status(
+        &prepared.workspace_id,
+        crate::forge::command::ForgeRunner::local(),
+    )
+    .expect("lookup_workspace_pr_action_status should succeed for initializing workspace");
     assert!(status.change_request.is_none());
     assert!(status.deployments.is_empty());
     assert!(status.checks.is_empty());

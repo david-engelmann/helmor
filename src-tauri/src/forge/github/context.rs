@@ -30,6 +30,13 @@ pub(super) struct GithubContext {
     /// resolvable via `git rev-parse`. Drives the
     /// "branch never published" short-circuit.
     pub has_remote_tracking: bool,
+    /// Runtime-aware `gh` dispatcher. When the workspace is bound to
+    /// a non-`local` runtime, every downstream `gh` invocation
+    /// (`run_cli_with_login`, `gh api`, etc.) routes through
+    /// `forge.exec` so the daemon's authenticated `gh` does the
+    /// work instead of the laptop's. `local()` keeps the legacy
+    /// behaviour for unbound / `local`-pinned workspaces.
+    pub runner: crate::forge::command::ForgeRunner,
 }
 
 /// Outcome of pre-flight resolution. Each non-`Ready` arm tells the
@@ -61,6 +68,7 @@ pub(super) enum GithubResolution {
 pub(super) fn load_github_context(
     workspace_id: &str,
     host_authenticated: HostAuthCheck,
+    runner: crate::forge::command::ForgeRunner,
 ) -> Result<GithubResolution> {
     let Some(record) = workspace_models::load_workspace_record_by_id(workspace_id)? else {
         bail!("Workspace not found: {workspace_id}");
@@ -113,6 +121,7 @@ pub(super) fn load_github_context(
         branch,
         login: login.to_string(),
         has_remote_tracking,
+        runner,
     }))
 }
 
@@ -203,7 +212,12 @@ mod tests {
         insert_workspace(&conn, "w-1", "r-1", "initializing", Some("feature"));
         drop(conn);
 
-        let resolution = load_github_context("w-1", HostAuthCheck::Skip).unwrap();
+        let resolution = load_github_context(
+            "w-1",
+            HostAuthCheck::Skip,
+            crate::forge::command::ForgeRunner::local(),
+        )
+        .unwrap();
         assert!(matches!(resolution, GithubResolution::Initializing));
     }
 
@@ -215,7 +229,12 @@ mod tests {
         insert_workspace(&conn, "w-2", "r-2", "ready", Some("feature"));
         drop(conn);
 
-        let resolution = load_github_context("w-2", HostAuthCheck::Skip).unwrap();
+        let resolution = load_github_context(
+            "w-2",
+            HostAuthCheck::Skip,
+            crate::forge::command::ForgeRunner::local(),
+        )
+        .unwrap();
         assert!(matches!(
             resolution,
             GithubResolution::Unavailable("Workspace has no remote")
@@ -236,7 +255,12 @@ mod tests {
         insert_workspace(&conn, "w-3", "r-3", "ready", Some("feature"));
         drop(conn);
 
-        let resolution = load_github_context("w-3", HostAuthCheck::Skip).unwrap();
+        let resolution = load_github_context(
+            "w-3",
+            HostAuthCheck::Skip,
+            crate::forge::command::ForgeRunner::local(),
+        )
+        .unwrap();
         assert!(matches!(
             resolution,
             GithubResolution::Unavailable("Workspace remote is not a GitHub repository")
@@ -257,7 +281,12 @@ mod tests {
         insert_workspace(&conn, "w-4", "r-4", "ready", None);
         drop(conn);
 
-        let resolution = load_github_context("w-4", HostAuthCheck::Skip).unwrap();
+        let resolution = load_github_context(
+            "w-4",
+            HostAuthCheck::Skip,
+            crate::forge::command::ForgeRunner::local(),
+        )
+        .unwrap();
         assert!(matches!(
             resolution,
             GithubResolution::Unavailable("Workspace has no current branch")
@@ -278,7 +307,12 @@ mod tests {
         insert_workspace(&conn, "w-5", "r-5", "ready", Some("feature"));
         drop(conn);
 
-        let resolution = load_github_context("w-5", HostAuthCheck::Skip).unwrap();
+        let resolution = load_github_context(
+            "w-5",
+            HostAuthCheck::Skip,
+            crate::forge::command::ForgeRunner::local(),
+        )
+        .unwrap();
         assert!(matches!(resolution, GithubResolution::Unauthenticated));
     }
 
@@ -298,7 +332,12 @@ mod tests {
         insert_workspace(&conn, "w-6", "r-6", "ready", Some("feature"));
         drop(conn);
 
-        let resolution = load_github_context("w-6", HostAuthCheck::Skip).unwrap();
+        let resolution = load_github_context(
+            "w-6",
+            HostAuthCheck::Skip,
+            crate::forge::command::ForgeRunner::local(),
+        )
+        .unwrap();
         assert!(matches!(resolution, GithubResolution::Unauthenticated));
     }
 
@@ -321,7 +360,12 @@ mod tests {
         insert_workspace(&conn, "w-7", "r-7", "ready", Some("feature"));
         drop(conn);
 
-        let resolution = load_github_context("w-7", HostAuthCheck::Probe).unwrap();
+        let resolution = load_github_context(
+            "w-7",
+            HostAuthCheck::Probe,
+            crate::forge::command::ForgeRunner::local(),
+        )
+        .unwrap();
         assert!(matches!(resolution, GithubResolution::Unauthenticated));
     }
 
@@ -339,7 +383,12 @@ mod tests {
         insert_workspace(&conn, "w-8", "r-8", "ready", Some("feature/auth"));
         drop(conn);
 
-        let resolution = load_github_context("w-8", HostAuthCheck::Skip).unwrap();
+        let resolution = load_github_context(
+            "w-8",
+            HostAuthCheck::Skip,
+            crate::forge::command::ForgeRunner::local(),
+        )
+        .unwrap();
         let GithubResolution::Ready(ctx) = resolution else {
             panic!("expected Ready, got something else");
         };
@@ -408,7 +457,12 @@ mod tests {
         );
         drop(conn);
 
-        let resolution = load_github_context("w-renamed", HostAuthCheck::Skip).unwrap();
+        let resolution = load_github_context(
+            "w-renamed",
+            HostAuthCheck::Skip,
+            crate::forge::command::ForgeRunner::local(),
+        )
+        .unwrap();
         let GithubResolution::Ready(ctx) = resolution else {
             panic!("expected Ready");
         };
@@ -430,7 +484,12 @@ mod tests {
         insert_workspace(&conn, "w-9", "r-9", "ready", Some("main"));
         drop(conn);
 
-        let resolution = load_github_context("w-9", HostAuthCheck::Skip).unwrap();
+        let resolution = load_github_context(
+            "w-9",
+            HostAuthCheck::Skip,
+            crate::forge::command::ForgeRunner::local(),
+        )
+        .unwrap();
         let GithubResolution::Ready(ctx) = resolution else {
             panic!("expected Ready");
         };
@@ -444,7 +503,11 @@ mod tests {
     #[test]
     fn errors_when_workspace_does_not_exist() {
         let _env = crate::testkit::TestEnv::new("github-ctx-missing");
-        let result = load_github_context("does-not-exist", HostAuthCheck::Skip);
+        let result = load_github_context(
+            "does-not-exist",
+            HostAuthCheck::Skip,
+            crate::forge::command::ForgeRunner::local(),
+        );
         assert!(result.is_err());
     }
 }

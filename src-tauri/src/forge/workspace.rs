@@ -70,12 +70,15 @@ pub fn get_workspace_forge(workspace_id: &str) -> Result<ForgeDetection> {
     Ok(detection)
 }
 
-pub fn refresh_workspace_change_request(workspace_id: &str) -> Result<Option<ChangeRequestInfo>> {
+pub(crate) fn refresh_workspace_change_request(
+    workspace_id: &str,
+    runner: crate::forge::command::ForgeRunner,
+) -> Result<Option<ChangeRequestInfo>> {
     let Some((detection, backend)) = resolve_backend(workspace_id, "lookup_change_request")? else {
         return Ok(None);
     };
     let result = backend
-        .lookup_change_request(workspace_id)
+        .lookup_change_request(workspace_id, runner)
         .inspect_err(|error| {
             log_forge_backend_error(
                 error,
@@ -95,20 +98,25 @@ pub fn refresh_workspace_change_request(workspace_id: &str) -> Result<Option<Cha
     Ok(result)
 }
 
-pub fn lookup_workspace_forge_action_status(workspace_id: &str) -> Result<ForgeActionStatus> {
+pub(crate) fn lookup_workspace_forge_action_status(
+    workspace_id: &str,
+    runner: crate::forge::command::ForgeRunner,
+) -> Result<ForgeActionStatus> {
     let Some((detection, backend)) = resolve_backend(workspace_id, "action_status")? else {
         return Ok(ForgeActionStatus::unavailable(
             "Workspace remote is not a supported forge repository",
         ));
     };
-    let status = backend.action_status(workspace_id).inspect_err(|error| {
-        log_forge_backend_error(
-            error,
-            workspace_id,
-            &detection,
-            "Forge action status lookup failed",
-        )
-    })?;
+    let status = backend
+        .action_status(workspace_id, runner)
+        .inspect_err(|error| {
+            log_forge_backend_error(
+                error,
+                workspace_id,
+                &detection,
+                "Forge action status lookup failed",
+            )
+        })?;
     tracing::debug!(
         workspace_id,
         provider = ?detection.provider,
@@ -121,15 +129,16 @@ pub fn lookup_workspace_forge_action_status(workspace_id: &str) -> Result<ForgeA
     Ok(status)
 }
 
-pub fn lookup_workspace_forge_check_insert_text(
+pub(crate) fn lookup_workspace_forge_check_insert_text(
     workspace_id: &str,
     item_id: &str,
+    runner: crate::forge::command::ForgeRunner,
 ) -> Result<String> {
     let Some((detection, backend)) = resolve_backend(workspace_id, "check_insert_text")? else {
         bail!("Workspace remote is not a supported forge repository");
     };
     let text = backend
-        .check_insert_text(workspace_id, item_id)
+        .check_insert_text(workspace_id, item_id, runner)
         .inspect_err(|error| {
             log_forge_backend_error(
                 error,
@@ -149,12 +158,15 @@ pub fn lookup_workspace_forge_check_insert_text(
     Ok(text)
 }
 
-pub fn merge_workspace_change_request(workspace_id: &str) -> Result<Option<ChangeRequestInfo>> {
+pub(crate) fn merge_workspace_change_request(
+    workspace_id: &str,
+    runner: crate::forge::command::ForgeRunner,
+) -> Result<Option<ChangeRequestInfo>> {
     let Some((detection, backend)) = resolve_backend(workspace_id, "merge_change_request")? else {
         return Ok(None);
     };
     let result = backend
-        .merge_change_request(workspace_id)
+        .merge_change_request(workspace_id, runner)
         .inspect_err(|error| {
             log_forge_backend_error(error, workspace_id, &detection, "Forge merge failed")
         })?;
@@ -168,12 +180,15 @@ pub fn merge_workspace_change_request(workspace_id: &str) -> Result<Option<Chang
     Ok(result)
 }
 
-pub fn close_workspace_change_request(workspace_id: &str) -> Result<Option<ChangeRequestInfo>> {
+pub(crate) fn close_workspace_change_request(
+    workspace_id: &str,
+    runner: crate::forge::command::ForgeRunner,
+) -> Result<Option<ChangeRequestInfo>> {
     let Some((detection, backend)) = resolve_backend(workspace_id, "close_change_request")? else {
         return Ok(None);
     };
     let result = backend
-        .close_change_request(workspace_id)
+        .close_change_request(workspace_id, runner)
         .inspect_err(|error| {
             log_forge_backend_error(error, workspace_id, &detection, "Forge close failed")
         })?;
