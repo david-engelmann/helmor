@@ -721,6 +721,75 @@ fn workspace_stop_watch_pre_initialize_is_gated_too() {
     assert_eq!(err.code, error_codes::NOT_INITIALIZED);
 }
 
+// ── forge.exec ────────────────────────────────────────────────
+
+/// `forge.exec` against a `LocalRuntime` shells out via the
+/// shared `forge::command::forge_run_local` path; this test proves
+/// the dispatcher's params → handler → trait → output round-trip
+/// preserves stdout, stderr, and exit code byte-for-byte. We use
+/// `/bin/sh -c "<script>"` rather than `gh`/`glab` so the test
+/// doesn't depend on a vendored forge CLI being staged in the test
+/// environment (those resolve through `bundled::bundled_path_for`
+/// which falls back to PATH lookup for non-`gh`/`glab` names).
+#[cfg(unix)]
+#[test]
+fn forge_exec_dispatches_to_local_runtime_and_round_trips_stdout_stderr_exit() {
+    use crate::remote::runtime::LocalRuntime;
+    let ctx = ServerContext::with_runtime(
+        "0.22.1",
+        "test-host",
+        Arc::new(LocalRuntime::with_hostname("test-host".into())),
+    );
+    let resp = run_after_initialize(
+        &ctx,
+        request(
+            "forge.exec",
+            json!({
+                "program": "/bin/sh",
+                "args": [
+                    "-c",
+                    "printf 'forge-exec-stdout-marker'; printf 'forge-exec-stderr-marker' 1>&2; exit 7",
+                ],
+            }),
+            2,
+        ),
+    );
+    let result = resp.result.expect("ok response");
+    assert_eq!(result["stdout"], "forge-exec-stdout-marker");
+    assert_eq!(result["stderr"], "forge-exec-stderr-marker");
+    assert_eq!(result["exitCode"], 7);
+}
+
+/// Wire-shape contract: the result key MUST be `exitCode` (camelCase).
+/// Without this, the desktop's serde deserialiser sees `exit_code`
+/// and bombs out on every call. Pin the shape so a future refactor
+/// can't silently drift.
+#[cfg(unix)]
+#[test]
+fn forge_exec_wire_shape_is_camel_case() {
+    use crate::remote::runtime::LocalRuntime;
+    let ctx = ServerContext::with_runtime(
+        "0.22.1",
+        "test-host",
+        Arc::new(LocalRuntime::with_hostname("test-host".into())),
+    );
+    let resp = run_after_initialize(
+        &ctx,
+        request(
+            "forge.exec",
+            json!({ "program": "/bin/sh", "args": ["-c", "true"] }),
+            2,
+        ),
+    );
+    let result = resp.result.expect("ok response");
+    let obj = result.as_object().expect("result is a JSON object");
+    assert!(obj.contains_key("stdout"));
+    assert!(obj.contains_key("stderr"));
+    assert!(obj.contains_key("exitCode"));
+    // Negative assertion: no snake_case leak.
+    assert!(!obj.contains_key("exit_code"));
+}
+
 // ── major_versions_match ──────────────────────────────────────
 
 #[test]

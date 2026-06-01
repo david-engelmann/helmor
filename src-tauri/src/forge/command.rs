@@ -153,6 +153,50 @@ fn kill_process(child_pid: u32) {
         .status();
 }
 
+/// Public escape hatch for the remote-runner seam. Runs the requested
+/// forge CLI on the LOCAL filesystem (i.e., this desktop process) and
+/// hands back its captured output in a wire-compatible shape so the
+/// `RemoteRuntime::forge_exec` trait method can dispatch through one
+/// uniform surface. The remote impl (`RemoteSshRuntime`) wires
+/// `forge.exec` through the JSON-RPC client instead; both paths
+/// agree on the return shape so callers don't care which runtime
+/// resolved the work.
+///
+/// `timeout_ms = None` keeps the existing `DEFAULT_COMMAND_TIMEOUT`
+/// behaviour — most internal callers don't override it.
+pub fn forge_run_local<I, S, K, V>(
+    program: &str,
+    args: I,
+    env: &[(K, V)],
+    timeout_ms: Option<u64>,
+) -> std::io::Result<ForgeLocalResult>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+    K: AsRef<OsStr>,
+    V: AsRef<OsStr>,
+{
+    let timeout = timeout_ms
+        .map(Duration::from_millis)
+        .unwrap_or(DEFAULT_COMMAND_TIMEOUT);
+    let output = run_command_full(program, args, timeout, env)?;
+    Ok(ForgeLocalResult {
+        stdout: output.stdout,
+        stderr: output.stderr,
+        exit_code: output.status,
+    })
+}
+
+/// Wire-compatible mirror of `super::remote::methods::ForgeExecResult`.
+/// Kept in this module (the local impl's home) so callers depending
+/// only on `crate::forge` don't have to reach into `remote::methods`.
+#[derive(Debug, Clone)]
+pub struct ForgeLocalResult {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+}
+
 pub(crate) fn command_detail(output: &CommandOutput) -> String {
     let stderr = output.stderr.trim();
     if !stderr.is_empty() {

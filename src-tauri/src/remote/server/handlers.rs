@@ -384,6 +384,18 @@ pub(super) fn handle_workspace_search(
     })
 }
 
+pub(super) fn handle_forge_exec(
+    ctx: &ServerContext,
+    params: super::super::methods::ForgeExecParams,
+) -> Result<super::super::methods::ForgeExecResult, JsonRpcError> {
+    ctx.runtime().forge_exec(params).map_err(|err| {
+        JsonRpcError::new(
+            error_codes::HANDLER_FAILED,
+            format!("forge.exec failed: {err:#}"),
+        )
+    })
+}
+
 pub(super) fn handle_workspace_bundle(
     ctx: &ServerContext,
     params: WorkspaceBundleParams,
