@@ -249,8 +249,10 @@ pub async fn generate_session_title(
                 let rid = request_id;
                 let session_id_for_logs = session_id_for_task;
                 move || {
-                    let sidecar_state: tauri::State<'_, std::sync::Arc<crate::sidecar::ManagedSidecar>> =
-                        app.state();
+                    let sidecar_state: tauri::State<
+                        '_,
+                        std::sync::Arc<crate::sidecar::ManagedSidecar>,
+                    > = app.state();
                     let mut title: Option<String> = None;
                     let mut branch_name: Option<String> = None;
 
