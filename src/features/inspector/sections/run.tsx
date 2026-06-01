@@ -39,6 +39,11 @@ import {
 type RunTabProps = {
 	repoId: string | null;
 	workspaceId: string | null;
+	/** Local-side worktree path; threaded through to the script-store so a
+	 *  workspace bound to a remote runtime can route the run command through
+	 *  the daemon's `terminal.open` (with `command` set). Null / omitted
+	 *  degrades the dispatch to local. */
+	workspaceRootPath?: string | null;
 	/**
 	 * `RunAction.id` for the action whose lifecycle this panel mirrors. `null`
 	 * when no action is selected yet (e.g. fresh repo with zero configured
@@ -169,6 +174,7 @@ export function OpenDevServerButton({ urls }: { urls: string[] }) {
 export function RunTab({
 	repoId,
 	workspaceId,
+	workspaceRootPath,
 	activeRunActionId,
 	activeRunActionName,
 	runScript,
@@ -255,8 +261,16 @@ export function RunTab({
 		termRef.current?.clear();
 		setStatus("running");
 		setHasRun(true);
-		startScript(repoId, "run", workspaceId, activeRunActionId);
-	}, [repoId, workspaceId, activeRunActionId]);
+		startScript(
+			repoId,
+			"run",
+			workspaceId,
+			activeRunActionId,
+			runScript
+				? { command: runScript, workspaceRootPath: workspaceRootPath ?? null }
+				: null,
+		);
+	}, [repoId, workspaceId, activeRunActionId, runScript, workspaceRootPath]);
 
 	const handleStop = useCallback(() => {
 		if (!repoId || !workspaceId || !activeRunActionId) return;
@@ -272,8 +286,15 @@ export function RunTab({
 		termRef.current?.clear();
 		setStatus("running");
 		setHasRun(true);
-		cleanupScript(repoId, workspaceId, activeRunActionId);
-	}, [repoId, workspaceId, activeRunActionId]);
+		cleanupScript(
+			repoId,
+			workspaceId,
+			activeRunActionId,
+			stopCommand
+				? { command: stopCommand, workspaceRootPath: workspaceRootPath ?? null }
+				: null,
+		);
+	}, [repoId, workspaceId, activeRunActionId, stopCommand, workspaceRootPath]);
 
 	// Forward keystrokes to the PTY. The backend silently ignores writes
 	// when no script is live, so we don't gate this on status.

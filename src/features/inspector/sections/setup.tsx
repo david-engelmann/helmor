@@ -25,6 +25,12 @@ import {
 type SetupTabProps = {
 	repoId: string | null;
 	workspaceId: string | null;
+	/** Local-side worktree path; threaded through to the script-store so
+	 *  a workspace bound to a remote runtime can route the setup script
+	 *  through the daemon's `terminal.open` (with `command` set) instead
+	 *  of the laptop's `executeRepoScript`. Null / omitted is fine —
+	 *  without a path the dispatch degrades to local. */
+	workspaceRootPath?: string | null;
 	setupScript: string | null;
 	/** Persisted timestamp of the last successful setup-script run for
 	 * this workspace. Non-null + no live in-memory entry → setup ran in
@@ -38,6 +44,7 @@ type SetupTabProps = {
 export function SetupTab({
 	repoId,
 	workspaceId,
+	workspaceRootPath,
 	setupScript,
 	setupCompletedAt,
 	isActive,
@@ -123,8 +130,16 @@ export function SetupTab({
 		termRef.current?.clear();
 		setStatus("running");
 		setHasRun(true);
-		startScript(repoId, "setup", workspaceId);
-	}, [repoId, workspaceId]);
+		startScript(
+			repoId,
+			"setup",
+			workspaceId,
+			null,
+			setupScript
+				? { command: setupScript, workspaceRootPath: workspaceRootPath ?? null }
+				: null,
+		);
+	}, [repoId, workspaceId, setupScript, workspaceRootPath]);
 
 	const handleStop = useCallback(() => {
 		if (!repoId || !workspaceId) return;

@@ -1,9 +1,15 @@
 import {
+	closeRemoteTerminal,
 	executeRepoScript,
 	executeRepoStopCommand,
+	listWorkspaceRuntimeBindings,
+	openRemoteTerminal,
+	resizeRemoteTerminal,
 	resizeRepoScript,
 	type ScriptEvent,
 	stopRepoScript,
+	type TerminalEventNotification,
+	writeRemoteTerminal,
 	writeRepoScriptStdin,
 } from "@/lib/api";
 import { dedupUrlKey, extractLocalUrls } from "./detect-urls";
@@ -53,6 +59,21 @@ const MAX_CHUNK_BYTES = 2 * 1024 * 1024;
 export const TRUNCATION_NOTICE =
 	"\r\n\x1b[2m… earlier output truncated (buffer limit reached) …\x1b[0m\r\n";
 
+/**
+ * Routing snapshot for a single live script invocation. When `null`,
+ * the entry's IPC dispatches against the local script-process surface
+ * (`writeRepoScriptStdin` / `resizeRepoScript` / `stopRepoScript`).
+ * When `non-null`, the script is running inside a remote PTY opened
+ * via `openRemoteTerminal` with `command` set, and dispatch flows
+ * through the remote terminal RPCs. The `terminalId` is the
+ * caller-picked id we passed at open time so subsequent
+ * write/resize/close calls reach the right PTY on the daemon.
+ */
+export type ScriptRemoteRouting = {
+	runtimeName: string;
+	terminalId: string;
+};
+
 export type ScriptEntry = {
 	chunks: string[];
 	/** Cached sum of chunk lengths; kept in sync by `appendChunk`. */
@@ -61,6 +82,10 @@ export type ScriptEntry = {
 	truncated: boolean;
 	status: ScriptStatus;
 	exitCode: number | null;
+	/** Set when the script is running on a remote runtime; null for
+	 * the local-PTY path. Used by stop / write / resize to dispatch
+	 * through the matching backend.  */
+	remoteRouting: ScriptRemoteRouting | null;
 	/**
 	 * Localhost-style dev-server URLs detected in stdout/stderr so far, in
 	 * first-seen order and deduped via {@link dedupUrlKey}. Populated lazily
@@ -189,6 +214,7 @@ function runScriptInternal(
 		truncated: false,
 		status: "running",
 		exitCode: null,
+		remoteRouting: null,
 		urls: [],
 		stopping: false,
 		userStopped: false,
@@ -306,17 +332,135 @@ function runScriptInternal(
 	});
 }
 
+/**
+ * Caller-supplied context that lets the store route a script through a
+ * remote runtime. Required for the remote dispatch path; optional
+ * (defaults to local) when callers don't have or don't need it. When
+ * present and the workspace is bound to a non-`local` runtime, the
+ * store runs the script via `openRemoteTerminal` with `command` set
+ * instead of the local `executeRepoScript` IPC. The local path stays
+ * a 100% drop-in fallback for unbound workspaces or workspaces pinned
+ * to `local`, and for any binding lookup failure.
+ */
+export type ScriptRemoteContext = {
+	/** Shell command line as it would be passed to `sh -c <cmd>`. The
+	 *  caller resolves this from `repoScripts.setupScript` /
+	 *  `runActions[].command` (or `.stopCommand` for cleanup). */
+	command: string;
+	/** Local-side worktree path. Falls back to this when the binding
+	 *  has no `remotePath` override (same-path setups). Null when no
+	 *  workspace context is in scope; routing then degrades to local. */
+	workspaceRootPath: string | null;
+};
+
+async function resolveScriptRouting(
+	workspaceId: string,
+	workspaceRootPath: string | null,
+): Promise<{ runtimeName: string; workspaceDir: string } | null> {
+	try {
+		const bindings = await listWorkspaceRuntimeBindings();
+		const binding = bindings.find((b) => b.workspaceId === workspaceId);
+		if (!binding) return null;
+		if (binding.runtimeName === "local") return null;
+		const workspaceDir =
+			binding.remotePath && binding.remotePath.trim().length > 0
+				? binding.remotePath
+				: workspaceRootPath;
+		if (!workspaceDir) return null;
+		return { runtimeName: binding.runtimeName, workspaceDir };
+	} catch {
+		// Mirror the terminal-store fallback: a flaky disk read or a
+		// deserialisation failure should never refuse to run a script.
+		return null;
+	}
+}
+
+function makeTerminalId(): string {
+	if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+		return crypto.randomUUID();
+	}
+	return `s-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+}
+
+/** Translate the remote terminal event shape into a `ScriptEvent`, so
+ *  the rest of `runScriptInternal` can stay surface-agnostic. */
+function adaptRemoteEvent(event: TerminalEventNotification): ScriptEvent {
+	const inner = event.event;
+	switch (inner.kind) {
+		case "stdout":
+			return { type: "stdout", data: inner.data };
+		case "exited":
+			return { type: "exited", code: inner.code };
+		case "error":
+			return { type: "error", message: inner.message };
+	}
+}
+
+/** Build the `invokeBackend` closure for `runScriptInternal`. Looks up
+ *  the workspace binding first and either opens a remote PTY-mode
+ *  terminal with the script's command (remote path) or falls back to
+ *  the existing local `executeRepoScript` IPC. Records the routing on
+ *  the live entry so stop / write / resize can dispatch correctly.  */
+function buildScriptInvoker(args: {
+	repoId: string;
+	scriptType: ScriptKind;
+	workspaceId: string;
+	actionId: string | null | undefined;
+	remoteContext: ScriptRemoteContext | null;
+	localFallback: (onEvent: (event: ScriptEvent) => void) => Promise<void>;
+}): (onEvent: (event: ScriptEvent) => void) => Promise<void> {
+	const { workspaceId, scriptType, actionId, remoteContext, localFallback } =
+		args;
+	return async (onEvent) => {
+		if (!remoteContext) {
+			return localFallback(onEvent);
+		}
+		const routing = await resolveScriptRouting(
+			workspaceId,
+			remoteContext.workspaceRootPath,
+		);
+		if (!routing) {
+			return localFallback(onEvent);
+		}
+		const entryKey = key(workspaceId, scriptType, actionId);
+		const entry = entries.get(entryKey);
+		// Entry may have been replaced or removed between
+		// `runScriptInternal` setting it and this lookup resolving;
+		// drop quietly in that case.
+		if (!entry) return;
+		const terminalId = makeTerminalId();
+		entry.remoteRouting = {
+			runtimeName: routing.runtimeName,
+			terminalId,
+		};
+		await openRemoteTerminal(
+			routing.runtimeName,
+			terminalId,
+			routing.workspaceDir,
+			{
+				cols: 80,
+				rows: 24,
+				command: remoteContext.command,
+				onEvent: (e) => onEvent(adaptRemoteEvent(e)),
+			},
+		);
+	};
+}
+
 export function startScript(
 	repoId: string,
 	scriptType: ScriptKind,
 	workspaceId: string,
 	actionId?: string | null,
+	remoteContext?: ScriptRemoteContext | null,
 ) {
-	runScriptInternal(
-		workspaceId,
+	const invokeBackend = buildScriptInvoker({
+		repoId,
 		scriptType,
+		workspaceId,
 		actionId,
-		(onEvent) =>
+		remoteContext: remoteContext ?? null,
+		localFallback: (onEvent) =>
 			executeRepoScript(
 				repoId,
 				scriptType,
@@ -324,6 +468,12 @@ export function startScript(
 				workspaceId,
 				actionId ?? null,
 			),
+	});
+	runScriptInternal(
+		workspaceId,
+		scriptType,
+		actionId,
+		invokeBackend,
 		"Failed to start",
 	);
 }
@@ -342,12 +492,22 @@ export function cleanupScript(
 	repoId: string,
 	workspaceId: string,
 	actionId: string,
+	remoteContext?: ScriptRemoteContext | null,
 ) {
+	const invokeBackend = buildScriptInvoker({
+		repoId,
+		scriptType: "run",
+		workspaceId,
+		actionId,
+		remoteContext: remoteContext ?? null,
+		localFallback: (onEvent) =>
+			executeRepoStopCommand(repoId, workspaceId, actionId, onEvent),
+	});
 	runScriptInternal(
 		workspaceId,
 		"run",
 		actionId,
-		(onEvent) => executeRepoStopCommand(repoId, workspaceId, actionId, onEvent),
+		invokeBackend,
 		"Failed to run stop command",
 	);
 }
@@ -363,6 +523,13 @@ export function stopScript(
 	// is correctly attributed to the user and not surfaced as a failure.
 	const entry = entries.get(key(workspaceId, scriptType, actionId));
 	if (entry) entry.userStopped = true;
+	if (entry?.remoteRouting) {
+		void closeRemoteTerminal(
+			entry.remoteRouting.runtimeName,
+			entry.remoteRouting.terminalId,
+		);
+		return;
+	}
 	void stopRepoScript(repoId, scriptType, workspaceId, actionId ?? null);
 }
 
@@ -378,6 +545,15 @@ export function writeStdin(
 	data: string,
 	actionId?: string | null,
 ) {
+	const entry = entries.get(key(workspaceId, scriptType, actionId));
+	if (entry?.remoteRouting) {
+		void writeRemoteTerminal(
+			entry.remoteRouting.runtimeName,
+			entry.remoteRouting.terminalId,
+			data,
+		);
+		return;
+	}
 	void writeRepoScriptStdin(
 		repoId,
 		scriptType,
@@ -400,6 +576,16 @@ export function resizeScript(
 	rows: number,
 	actionId?: string | null,
 ) {
+	const entry = entries.get(key(workspaceId, scriptType, actionId));
+	if (entry?.remoteRouting) {
+		void resizeRemoteTerminal(
+			entry.remoteRouting.runtimeName,
+			entry.remoteRouting.terminalId,
+			cols,
+			rows,
+		);
+		return;
+	}
 	void resizeRepoScript(
 		repoId,
 		scriptType,

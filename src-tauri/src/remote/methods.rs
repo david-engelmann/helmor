@@ -523,6 +523,20 @@ pub struct TerminalOpenParams {
     /// falling back to `/bin/sh` if it isn't set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell: Option<String>,
+    /// Optional non-interactive command. When `Some(cmd)`, the
+    /// daemon spawns `<shell> -c "<cmd>"` instead of an interactive
+    /// `<shell> -i -l`, and the PTY exits as soon as `cmd` returns.
+    /// This is how Setup / Run scripts route through the same
+    /// terminal infrastructure on a remote-bound workspace without
+    /// needing a parallel `script.*` RPC surface — the frontend
+    /// translates the resulting `terminal.event` stream into the
+    /// same `ScriptEvent` shape the local `executeRepoScript` path
+    /// produces.
+    ///
+    /// `None` keeps the legacy interactive behaviour, so existing
+    /// terminal-tab opens are unaffected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
     /// Initial PTY size. xterm-256color defaults are 80×24 but the
     /// frontend almost always knows its actual viewport — pass it
     /// so the shell's first prompt renders at the right width.
@@ -1703,6 +1717,7 @@ mod tests {
             terminal_id: "term-1".into(),
             workspace_dir: "/home/me/repo".into(),
             shell: Some("/bin/zsh".into()),
+            command: None,
             cols: 120,
             rows: 30,
         };
@@ -1722,6 +1737,7 @@ mod tests {
             terminal_id: "t".into(),
             workspace_dir: "/tmp".into(),
             shell: None,
+            command: None,
             cols: 80,
             rows: 24,
         };

@@ -609,6 +609,7 @@ export function WorkspaceInspectorSidebar({
 				<SetupTab
 					repoId={repoId ?? null}
 					workspaceId={workspaceId ?? null}
+					workspaceRootPath={workspaceRootPath ?? null}
 					setupScript={repoScripts?.setupScript ?? null}
 					setupCompletedAt={workspaceSetupCompletedAt ?? null}
 					isActive={activeTab === "setup"}
@@ -617,6 +618,7 @@ export function WorkspaceInspectorSidebar({
 				<RunTab
 					repoId={repoId ?? null}
 					workspaceId={workspaceId ?? null}
+					workspaceRootPath={workspaceRootPath ?? null}
 					activeRunActionId={activeRunActionId}
 					activeRunActionName={activeAction?.name ?? null}
 					runScript={activeAction?.command ?? null}

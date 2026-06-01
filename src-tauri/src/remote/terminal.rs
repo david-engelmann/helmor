@@ -380,9 +380,18 @@ impl ActiveTerminal {
         }
 
         let mut cmd = Command::new(&shell);
-        cmd.arg("-i")
-            .arg("-l")
-            .current_dir(&params.workspace_dir)
+        // `command` is the script-mode escape hatch (Setup / Run on a
+        // remote-bound workspace). When set we spawn `<shell> -c
+        // "<command>"` so the PTY exits with the command's status as
+        // soon as it finishes; without it we keep the legacy
+        // interactive login behaviour so existing terminal-tab opens
+        // are unaffected.
+        if let Some(command) = params.command.as_deref() {
+            cmd.arg("-c").arg(command);
+        } else {
+            cmd.arg("-i").arg("-l");
+        }
+        cmd.current_dir(&params.workspace_dir)
             .env("TERM", "xterm-256color")
             .env("FORCE_COLOR", "1")
             .env("CLICOLOR_FORCE", "1")
@@ -752,6 +761,7 @@ mod tests {
                     terminal_id: "t1".into(),
                     workspace_dir: "/tmp".into(),
                     shell: Some("/bin/sh".into()),
+                    command: None,
                     cols: 80,
                     rows: 24,
                 },
@@ -786,6 +796,61 @@ mod tests {
         }
     }
 
+    /// Script-mode: when `command` is set, the daemon spawns
+    /// `<shell> -c "<command>"` instead of an interactive login. The
+    /// PTY's stdout must carry the command's output and the waiter
+    /// must surface its exit code so the desktop's script-store can
+    /// translate the event stream into the same `ScriptEvent` shape
+    /// the local `executeRepoScript` path already emits.
+    #[test]
+    fn command_mode_runs_the_command_and_exits_with_its_status() {
+        let (notifier, inbox) = CapturingNotifier::new();
+        let state = RemoteTerminalState::new();
+        state
+            .open(
+                TerminalOpenParams {
+                    terminal_id: "t-cmd".into(),
+                    workspace_dir: "/tmp".into(),
+                    shell: Some("/bin/sh".into()),
+                    command: Some("printf 'helmor-script-marker\\n'; exit 7".into()),
+                    cols: 80,
+                    rows: 24,
+                },
+                Arc::new(notifier),
+            )
+            .expect("open should succeed");
+
+        // The marker must hit stdout; this proves we're actually
+        // running `sh -c <cmd>`, not the legacy `sh -i -l`.
+        let stdout_event = wait_for_event(
+            &inbox,
+            |e| match &e.event {
+                TerminalEventKind::Stdout { data } => data.contains("helmor-script-marker"),
+                _ => false,
+            },
+            Duration::from_secs(2),
+        );
+        assert_eq!(stdout_event.terminal_id, "t-cmd");
+
+        // And the PTY must exit with the command's status (7), not
+        // hang waiting for a user to type `exit`.
+        let exit_event = wait_for_event(
+            &inbox,
+            |e| e.terminal_id == "t-cmd" && matches!(&e.event, TerminalEventKind::Exited { .. }),
+            Duration::from_secs(2),
+        );
+        match exit_event.event {
+            TerminalEventKind::Exited { code } => {
+                assert_eq!(
+                    code,
+                    Some(7),
+                    "command exit must propagate to the wire; got {code:?}",
+                );
+            }
+            other => panic!("expected Exited, got {other:?}"),
+        }
+    }
+
     #[test]
     fn write_then_close_round_trips_through_stdout_event() {
         let (notifier, inbox) = CapturingNotifier::new();
@@ -796,6 +861,7 @@ mod tests {
                     terminal_id: "t-echo".into(),
                     workspace_dir: "/tmp".into(),
                     shell: Some("/bin/sh".into()),
+                    command: None,
                     cols: 80,
                     rows: 24,
                 },
@@ -851,6 +917,7 @@ mod tests {
                     terminal_id: "dup".into(),
                     workspace_dir: "/tmp".into(),
                     shell: Some("/bin/sh".into()),
+                    command: None,
                     cols: 80,
                     rows: 24,
                 },
@@ -863,6 +930,7 @@ mod tests {
                     terminal_id: "dup".into(),
                     workspace_dir: "/tmp".into(),
                     shell: Some("/bin/sh".into()),
+                    command: None,
                     cols: 80,
                     rows: 24,
                 },
@@ -899,6 +967,7 @@ mod tests {
                     terminal_id: "r1".into(),
                     workspace_dir: "/tmp".into(),
                     shell: Some("/bin/sh".into()),
+                    command: None,
                     cols: 80,
                     rows: 24,
                 },
@@ -940,6 +1009,7 @@ mod tests {
                     terminal_id: "".into(),
                     workspace_dir: "/tmp".into(),
                     shell: Some("/bin/sh".into()),
+                    command: None,
                     cols: 80,
                     rows: 24,
                 },
@@ -963,6 +1033,7 @@ mod tests {
                     terminal_id: "older".into(),
                     workspace_dir: "/tmp".into(),
                     shell: Some("/bin/sh".into()),
+                    command: None,
                     cols: 100,
                     rows: 30,
                 },
@@ -979,6 +1050,7 @@ mod tests {
                     terminal_id: "newer".into(),
                     workspace_dir: "/tmp".into(),
                     shell: Some("/bin/sh".into()),
+                    command: None,
                     cols: 120,
                     rows: 40,
                 },
@@ -1033,6 +1105,7 @@ mod tests {
                     terminal_id: "swap".into(),
                     workspace_dir: "/tmp".into(),
                     shell: Some("/bin/sh".into()),
+                    command: None,
                     cols: 80,
                     rows: 24,
                 },

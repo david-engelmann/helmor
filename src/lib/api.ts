@@ -1724,6 +1724,14 @@ export async function openRemoteTerminal(
 	workspaceDir: string,
 	options: {
 		shell?: string;
+		/**
+		 * Optional non-interactive command. When set, the daemon runs
+		 * `<shell> -c "<command>"` and the PTY exits when the command
+		 * does — that's how Setup / Run scripts route through the same
+		 * terminal infrastructure on a remote-bound workspace. Leave
+		 * unset for an interactive shell (the Terminal-tab case).
+		 */
+		command?: string;
 		cols: number;
 		rows: number;
 		onEvent: (event: TerminalEventNotification) => void;
@@ -1736,6 +1744,7 @@ export async function openRemoteTerminal(
 		terminalId,
 		workspaceDir,
 		shell: options.shell,
+		command: options.command,
 		cols: options.cols,
 		rows: options.rows,
 		channel,
