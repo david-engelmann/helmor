@@ -8,11 +8,18 @@ use std::sync::OnceLock;
 
 use crate::{
     error::{AnyhowCodedExt, ErrorCode},
-    forge::command::{run_command, run_command_with_env, CommandOutput},
+    forge::command::CommandOutput,
+    forge::command::ForgeRunner,
 };
 
 /// Run `glab api --hostname <host> …args`, capturing stdout/stderr.
+///
+/// `runner` controls where the call lands: a workspace bound to a
+/// remote runtime gets its `glab api` traffic spoken from the
+/// container's `glab`; an unbound (or `local`-pinned) workspace
+/// keeps using the laptop's `glab` exactly like before.
 pub(super) fn glab_api<'a>(
+    runner: &ForgeRunner,
     host: &str,
     args: impl IntoIterator<Item = &'a str>,
 ) -> anyhow::Result<CommandOutput> {
@@ -23,11 +30,21 @@ pub(super) fn glab_api<'a>(
     ];
     full_args.extend(args.into_iter().map(str::to_string));
     tracing::debug!(host, args = ?full_args, "Running glab api");
-    let output = match resolved_glab_config_dir() {
-        Some(dir) => {
-            run_command_with_env("glab", full_args, &[("GLAB_CONFIG_DIR", dir.as_os_str())])
+    // `GLAB_CONFIG_DIR` is a host-only concern: it pins glab to one
+    // of the laptop's two possible config dirs (XDG vs macOS) so the
+    // multi-config warning doesn't leak into our diagnostics. The
+    // remote daemon's `glab` has its own config under the daemon's
+    // `$HOME` and doesn't need (or want) the laptop's path. So we
+    // only emit the env when the runner is local.
+    let output = if runner.is_local() {
+        match resolved_glab_config_dir() {
+            Some(dir) => {
+                runner.run_with_env("glab", full_args, &[("GLAB_CONFIG_DIR", dir.as_os_str())])
+            }
+            None => runner.run("glab", full_args),
         }
-        None => run_command("glab", full_args),
+    } else {
+        runner.run("glab", full_args)
     };
     match &output {
         Ok(output) if output.success => {

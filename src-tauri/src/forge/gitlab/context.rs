@@ -21,6 +21,12 @@ pub(super) struct GitlabContext {
     /// Bound glab account. Always non-empty — `Unauthenticated`
     /// short-circuits before we'd ever produce a context with `None`.
     pub(super) login: String,
+    /// Runtime-aware `glab` dispatcher. When the workspace is bound
+    /// to a non-`local` runtime, every downstream `glab api ...`
+    /// call routes through `forge.exec` so the daemon's authenticated
+    /// `glab` does the work instead of the laptop's. Same shape as
+    /// the GitHub side (`GithubContext.runner`).
+    pub(super) runner: crate::forge::command::ForgeRunner,
 }
 
 pub(super) enum GitlabResolution {
@@ -30,7 +36,10 @@ pub(super) enum GitlabResolution {
     Unauthenticated,
 }
 
-pub(super) fn load_gitlab_context(workspace_id: &str) -> Result<GitlabResolution> {
+pub(super) fn load_gitlab_context(
+    workspace_id: &str,
+    runner: crate::forge::command::ForgeRunner,
+) -> Result<GitlabResolution> {
     let Some(record) = workspace_models::load_workspace_record_by_id(workspace_id)? else {
         bail!("Workspace not found: {workspace_id}");
     };
@@ -77,6 +86,7 @@ pub(super) fn load_gitlab_context(workspace_id: &str) -> Result<GitlabResolution
         branch,
         published,
         login,
+        runner,
     }))
 }
 
@@ -139,7 +149,7 @@ mod tests {
         drop(conn);
 
         assert!(matches!(
-            load_gitlab_context("w-1").unwrap(),
+            load_gitlab_context("w-1", crate::forge::command::ForgeRunner::local()).unwrap(),
             GitlabResolution::Initializing
         ));
     }
@@ -153,7 +163,7 @@ mod tests {
         drop(conn);
 
         assert!(matches!(
-            load_gitlab_context("w-2").unwrap(),
+            load_gitlab_context("w-2", crate::forge::command::ForgeRunner::local()).unwrap(),
             GitlabResolution::Unavailable("Workspace has no remote")
         ));
     }
@@ -167,7 +177,7 @@ mod tests {
         drop(conn);
 
         assert!(matches!(
-            load_gitlab_context("w-3").unwrap(),
+            load_gitlab_context("w-3", crate::forge::command::ForgeRunner::local()).unwrap(),
             GitlabResolution::Unavailable("Workspace remote is not a GitLab repository")
         ));
     }
@@ -187,7 +197,7 @@ mod tests {
         drop(conn);
 
         assert!(matches!(
-            load_gitlab_context("w-4").unwrap(),
+            load_gitlab_context("w-4", crate::forge::command::ForgeRunner::local()).unwrap(),
             GitlabResolution::Unavailable("Workspace has no current branch")
         ));
     }
@@ -207,7 +217,7 @@ mod tests {
         drop(conn);
 
         assert!(matches!(
-            load_gitlab_context("w-5").unwrap(),
+            load_gitlab_context("w-5", crate::forge::command::ForgeRunner::local()).unwrap(),
             GitlabResolution::Unauthenticated
         ));
     }
@@ -227,7 +237,7 @@ mod tests {
         drop(conn);
 
         assert!(matches!(
-            load_gitlab_context("w-6").unwrap(),
+            load_gitlab_context("w-6", crate::forge::command::ForgeRunner::local()).unwrap(),
             GitlabResolution::Unauthenticated
         ));
     }
@@ -246,7 +256,9 @@ mod tests {
         insert_workspace(&conn, "w-7", "r-7", "ready", Some("feature/auth"));
         drop(conn);
 
-        let GitlabResolution::Ready(ctx) = load_gitlab_context("w-7").unwrap() else {
+        let GitlabResolution::Ready(ctx) =
+            load_gitlab_context("w-7", crate::forge::command::ForgeRunner::local()).unwrap()
+        else {
             panic!("expected Ready");
         };
         assert_eq!(ctx.remote.host, "gitlab.com");
@@ -270,7 +282,9 @@ mod tests {
         insert_workspace(&conn, "w-8", "r-8", "ready", Some("main"));
         drop(conn);
 
-        let GitlabResolution::Ready(ctx) = load_gitlab_context("w-8").unwrap() else {
+        let GitlabResolution::Ready(ctx) =
+            load_gitlab_context("w-8", crate::forge::command::ForgeRunner::local()).unwrap()
+        else {
             panic!("expected Ready");
         };
         assert_eq!(ctx.remote.host, "gitlab.example.com");
@@ -281,7 +295,11 @@ mod tests {
     #[test]
     fn errors_when_workspace_does_not_exist() {
         let _env = crate::testkit::TestEnv::new("gitlab-ctx-missing");
-        assert!(load_gitlab_context("does-not-exist").is_err());
+        assert!(load_gitlab_context(
+            "does-not-exist",
+            crate::forge::command::ForgeRunner::local()
+        )
+        .is_err());
     }
 
     #[test]
@@ -338,7 +356,9 @@ mod tests {
         );
         drop(conn);
 
-        let GitlabResolution::Ready(ctx) = load_gitlab_context("w-renamed").unwrap() else {
+        let GitlabResolution::Ready(ctx) =
+            load_gitlab_context("w-renamed", crate::forge::command::ForgeRunner::local()).unwrap()
+        else {
             panic!("expected Ready");
         };
         assert_eq!(ctx.branch, "feature/remote-name");
