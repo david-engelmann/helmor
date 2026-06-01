@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 
+use crate::forge::command::ForgeRunner;
 use crate::models::{repos, sessions, settings};
 use crate::service::{self, SendMessageParams};
 
@@ -7,6 +8,38 @@ use super::prompts::{build_agent_action_prompt, PromptContext};
 use super::{
     DispatchedShipAction, OwnedSessionOverrides, WorkspaceShipActionKind, WorkspaceShipActionResult,
 };
+
+/// CLI/script-side `ForgeRunner` factory for ship actions. Same
+/// behaviour + reasoning as `cli::github::forge_runner_for_workspace_cli`
+/// — reads the bindings store from disk to detect a remote pin,
+/// emits a one-line stderr notice when found, and always returns
+/// a local runner because the CLI binary has no in-process runtime
+/// registry to dispatch through. The GUI uses
+/// `commands::forge_commands::merge_workspace_change_request`
+/// instead (which resolves the runner from Tauri state), so the
+/// notice only fires on real CLI use.
+fn forge_runner_for_ship_action(workspace_id: &str) -> ForgeRunner {
+    let bound = crate::models::workspaces::load_workspace_runtime_name(workspace_id)
+        .ok()
+        .flatten()
+        .or_else(|| match crate::data_dir::data_dir() {
+            Ok(dir) => {
+                crate::remote::WorkspaceRuntimeBindings::load_from_disk(&dir).lookup(workspace_id)
+            }
+            Err(_) => None,
+        });
+    if let Some(name) = bound {
+        if name != "local" {
+            eprintln!(
+                "warning: workspace is bound to remote runtime `{name}` — `helmor ship` \
+                 runs forge actions against the laptop's `gh`/`glab` and does not route \
+                 through the daemon. Use the GUI for binding-aware Ship on remote-bound \
+                 workspaces."
+            );
+        }
+    }
+    ForgeRunner::local()
+}
 
 pub fn run_workspace_ship_action(
     workspace_ref: &str,
@@ -16,15 +49,21 @@ pub fn run_workspace_ship_action(
 
     match action {
         WorkspaceShipActionKind::MergePr => {
-            // CLI ship actions stay laptop-only for now — the CLI
-            // binary doesn't see the runtime registry / bindings the
-            // GUI uses to resolve a workspace's remote runner. Follow
-            // up by plumbing those through `service::resolve_workspace_ref`
-            // so a remote-bound workspace's ship action lands on its
-            // runtime's `gh`.
+            // Ship actions go through this code path from both the
+            // GUI's Ship dropdown AND the `helmor ship` CLI. The CLI
+            // has no long-lived runtime registry / SSH connection
+            // pool to dispatch a remote `gh` through, so we degrade
+            // to local with a stderr notice when a workspace is
+            // bound to a non-`local` runtime — exactly the same
+            // shape as `cli::github::forge_runner_for_workspace_cli`.
+            // GUI invocations go through the binding-aware
+            // `commands::forge_commands::merge_workspace_change_request`
+            // Tauri command (which already resolves the runner from
+            // the in-process registry), not this function, so the
+            // notice only fires on actual CLI usage.
             let info = crate::forge::merge_workspace_change_request(
                 &workspace_id,
-                crate::forge::command::ForgeRunner::local(),
+                forge_runner_for_ship_action(&workspace_id),
             )?;
             Ok(WorkspaceShipActionResult::Direct {
                 action,
