@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { findProviderCapabilities, type ProviderCapabilities } from "./api";
+import {
+	DEFAULT_PROVIDER_CAPABILITIES,
+	findProviderCapabilities,
+	type ProviderCapabilities,
+} from "./api";
+import { providerCapabilitiesQueryOptions } from "./query-client";
 
 const claudeCaps: ProviderCapabilities = {
 	provider: "claude",
@@ -87,6 +92,64 @@ describe("findProviderCapabilities", () => {
 		);
 		expect(findProviderCapabilities(table, "codex")?.requiresApiKey).toBe(
 			false,
+		);
+	});
+});
+
+// Cold-start regression gate. Before the capability table is hydrated
+// from the persisted cache / `list_provider_capabilities` IPC, consumers
+// read the query's `initialData`. If that fell back to an empty table
+// (or `undefined`), `findProviderCapabilities(..., "codex")` would return
+// null and Codex would read `supportsActiveGoal === false` — silently
+// disabling `/goal pause|clear` interception in the composer and the
+// goal-pause-before-abort in `handleStopStream`. These tests pin the
+// local default table to the Rust source-of-truth values so that window
+// never reopens.
+describe("DEFAULT_PROVIDER_CAPABILITIES (cold-start initialData)", () => {
+	it("covers exactly the three shipping providers", () => {
+		expect(DEFAULT_PROVIDER_CAPABILITIES.map((caps) => caps.provider)).toEqual([
+			"claude",
+			"codex",
+			"cursor",
+		]);
+	});
+
+	it("keeps Codex active-goal support on before hydration", () => {
+		expect(
+			findProviderCapabilities(DEFAULT_PROVIDER_CAPABILITIES, "codex")
+				?.supportsActiveGoal,
+		).toBe(true);
+		expect(
+			findProviderCapabilities(DEFAULT_PROVIDER_CAPABILITIES, "claude")
+				?.supportsActiveGoal,
+		).toBe(false);
+		expect(
+			findProviderCapabilities(DEFAULT_PROVIDER_CAPABILITIES, "cursor")
+				?.supportsActiveGoal,
+		).toBe(false);
+	});
+
+	it("mirrors the Rust default rows for display name + key flags", () => {
+		const codex = findProviderCapabilities(
+			DEFAULT_PROVIDER_CAPABILITIES,
+			"codex",
+		);
+		expect(codex?.displayName).toBe("Codex");
+		expect(codex?.permissionModes).toEqual(["default", "bypassPermissions"]);
+		const cursor = findProviderCapabilities(
+			DEFAULT_PROVIDER_CAPABILITIES,
+			"cursor",
+		);
+		expect(cursor?.displayName).toBe("Cursor");
+		expect(cursor?.requiresApiKey).toBe(true);
+	});
+
+	it("is wired as the query's initialData so the cold-start window is closed", () => {
+		// `toBe` ties the wiring to the constant whose Codex active-goal
+		// flag is pinned by the test above — so the query hands consumers a
+		// table with `supportsActiveGoal === true` before any hydration.
+		expect(providerCapabilitiesQueryOptions().initialData).toBe(
+			DEFAULT_PROVIDER_CAPABILITIES,
 		);
 	});
 });

@@ -1,5 +1,281 @@
 # Changelog
 
+## 0.28.2
+
+### Patch Changes
+
+- [#703](https://github.com/dohooo/helmor/pull/703) [`b73db63`](https://github.com/dohooo/helmor/commit/b73db63544098ae7b7a6a10accc4ef9e8b5c4823) Thanks [@dohooo](https://github.com/dohooo)! - Fix the agent scratch directory so `.agent-contexts/` stays out of workspace Changes in new and existing worktree workspaces.
+
+- [#701](https://github.com/dohooo/helmor/pull/701) [`421a5df`](https://github.com/dohooo/helmor/commit/421a5df6b6cca5859542f663c2145a878f5358bc) Thanks [@dohooo](https://github.com/dohooo)! - Make Smart triage reliably pick up Slack channel @-mentions, and stop background fetching entirely for users who haven't enabled it:
+  - Triage now indexes the channels you were @-mentioned in — including mentions inside threads (the full thread is pulled in for context) and channels you aren't a member of. Previously thread mentions were silently dropped and channels were crowded out by your DMs, so those tasks never surfaced.
+  - When Smart triage is turned off, Helmor no longer runs any background Slack/GitHub/GitLab/Lark fetches, so people who don't use the feature incur zero background activity.
+  - In the Context Slack inbox, opening an @-mention that was posted inside a thread now shows the full thread (tagged with a `Thread` badge), instead of only the surrounding channel messages.
+
+## 0.28.1
+
+### Patch Changes
+
+- [#697](https://github.com/dohooo/helmor/pull/697) [`f3329ec`](https://github.com/dohooo/helmor/commit/f3329eceae1d2f56c7b108e9956bdd0a18d726a0) Thanks [@dohooo](https://github.com/dohooo)! - Make Smart triage reliably pick up Slack messages:
+  - Triage now retries transient Slack failures (DNS, connection, and 5xx errors) instead of dropping the whole fetch, so Slack channel mentions and DMs stop being silently missed.
+  - The Triage settings panel now flags a Slack source as needing attention (with the failure reason) when its background fetch is failing, instead of always showing it as connected.
+
+## 0.28.0
+
+### Minor Changes
+
+- [#685](https://github.com/dohooo/helmor/pull/685) [`a0a7f5c`](https://github.com/dohooo/helmor/commit/a0a7f5c1304ada858ed69fb1c090c69e6163e2a3) Thanks [@dohooo](https://github.com/dohooo)! - Upgrade the bundled agent CLIs and add Claude Opus 4.8.
+
+  - Claude Opus 4.8 (1M context) is now the default Claude model, listed above Opus 4.7 and 4.6 in the model picker.
+  - Bundled Claude Code 2.1.139 → 2.1.154, Claude Agent SDK 0.2.139 → 0.3.154, and Codex 0.130.0 → 0.134.0.
+  - Claude task lists now arrive as the incremental Task tools (TaskCreate/TaskUpdate) instead of TodoWrite; they render as the same single evolving plan widget as before.
+  - Codex 0.134 drops support for legacy `[profiles]` config sections. If you hand-edited `~/.codex/config.toml` with a `[profiles]` block, migrate it to the profile v2 format.
+
+- [#685](https://github.com/dohooo/helmor/pull/685) [`a0a7f5c`](https://github.com/dohooo/helmor/commit/a0a7f5c1304ada858ed69fb1c090c69e6163e2a3) Thanks [@dohooo](https://github.com/dohooo)! - Add GUI support for Claude Code Dynamic Workflows.
+
+  - Workflow runs render as an evolving in-thread card (phases, agents, token/duration footer).
+  - A new `/workflows` command opens an independent, keyboard-navigable drill-down above the composer — runs → phase-grouped agents → per-agent detail (model, tokens, tools, duration, and the agent's markdown-rendered result) — without sending a message; arrow keys navigate and Esc closes it.
+  - Typing a magic keyword like "workflow" or "ultrathink" in the composer highlights it with an animated gradient as a mode cue.
+  - The model picker now marks the active model with a checkmark.
+  - Workflow task lifecycle is persisted, so reopening a past conversation keeps the full workflow tree instead of a bare placeholder.
+
+### Patch Changes
+
+- [#692](https://github.com/dohooo/helmor/pull/692) [`605c4e3`](https://github.com/dohooo/helmor/commit/605c4e39ae28cdd5ab41409c7a20a2bac9f7a3fa) Thanks [@natllian](https://github.com/natllian)! - Fix the Codex Stop button so aborting takes effect immediately instead of lagging several seconds, and so it works even while the turn is still starting up.
+
+- [#694](https://github.com/dohooo/helmor/pull/694) [`36c9e6c`](https://github.com/dohooo/helmor/commit/36c9e6cc39373b6917c87d654bb96e3e97e1f0e4) Thanks [@natllian](https://github.com/natllian)! - Fix dismissing or archiving a workspace jumping to the start page instead of advancing to the next workspace in the same group.
+
+- [#687](https://github.com/dohooo/helmor/pull/687) [`6efe814`](https://github.com/dohooo/helmor/commit/6efe814fff11fafc5ff0916632a6d40ff0206c14) Thanks [@natllian](https://github.com/natllian)! - Tell you right away when Claude fast mode can't run on your account.
+
+- [#690](https://github.com/dohooo/helmor/pull/690) [`0099c7e`](https://github.com/dohooo/helmor/commit/0099c7eddca9017b7994ffd548b54285570f6c6e) Thanks [@natllian](https://github.com/natllian)! - Fix the start page's "Work locally" branch picker so it shows your working directory's current branch instead of defaulting to `main`.
+
+## 0.27.0
+
+### Minor Changes
+
+- [#409](https://github.com/dohooo/helmor/pull/409) [`920e57a`](https://github.com/dohooo/helmor/commit/920e57af8bac8da360b5df0fade7f224911f3237) Thanks [@aidxun](https://github.com/aidxun)! - Add a macOS proxy setting for Claude Code and Codex connections, with system and custom proxy options while leaving non-macOS behavior unchanged.
+
+### Patch Changes
+
+- [#674](https://github.com/dohooo/helmor/pull/674) [`2577d43`](https://github.com/dohooo/helmor/commit/2577d4301cb449c1aa533a9257d1203bdd50e17c) Thanks [@natllian](https://github.com/natllian)! - Fix the Clone from URL dialog rejecting destinations that don't exist yet — Helmor now creates the folder for you instead of forcing a manual mkdir.
+
+- [#675](https://github.com/dohooo/helmor/pull/675) [`43112e3`](https://github.com/dohooo/helmor/commit/43112e3c3b874812a562ff6cf6609006e5dc7ca8) Thanks [@natllian](https://github.com/natllian)! - Add an Edit button on queued messages so you can pull a single queued message back into the composer to revise without touching the other queued items.
+
+- [#666](https://github.com/dohooo/helmor/pull/666) [`b7607d9`](https://github.com/dohooo/helmor/commit/b7607d9b59d914ebc9bfd64658b21cc2032cf3f3) Thanks [@dohooo](https://github.com/dohooo)! - Three fixes for sending prompts from the CLI and chatting outside a workspace:
+
+  - Fix `helmor send` failing with `Failed to borrow write connection: timed out waiting for connection` when an agent dispatches prompts to running workspaces.
+  - Fix concurrent CLI sends silently dropping every prompt past the first one — the App now picks up each queued prompt in turn instead of discarding the rest while only dispatching the oldest.
+  - Fix "Just Chat" sessions being told they were bound to a workspace with a working directory and a target branch, which previously led the agent into nonsensical `git` and PR commands.
+
+- [#658](https://github.com/dohooo/helmor/pull/658) [`edb8d5b`](https://github.com/dohooo/helmor/commit/edb8d5b0b030c56c40ed117e30ac3909660b417e) Thanks [@natllian](https://github.com/natllian)! - Add Smart Triage — an opt-in Local LLM feature under Experimental that periodically scans Slack / Lark / GitLab / GitHub for actionable items and spins up AI-prepared workspaces with referenced images attached.
+
+- [#666](https://github.com/dohooo/helmor/pull/666) [`b7607d9`](https://github.com/dohooo/helmor/commit/b7607d9b59d914ebc9bfd64658b21cc2032cf3f3) Thanks [@dohooo](https://github.com/dohooo)! - Add a Cleanup button next to Rerun in the Run tab that runs the action's configured `stopCommand` standalone — lets you tear down lingering side effects (docker containers, daemons) left by `supabase start` / `docker compose up` style commands after they exit, so the next Rerun isn't sabotaged by "already running" state.
+
+## 0.26.0
+
+### Minor Changes
+
+- [#664](https://github.com/dohooo/helmor/pull/664) [`d826150`](https://github.com/dohooo/helmor/commit/d8261506cd19ab30b9c2d014669668441019a98d) Thanks [@dohooo](https://github.com/dohooo)! - Let coding agents operate Helmor itself:
+  - Agents now know they're running inside Helmor (current workspace, target branch, linked directories) and can use the bundled `helmor-cli` skill to spawn sibling workspaces, dispatch ship actions, search sessions across all workspaces, and read other agents' transcripts.
+  - `helmor-cli` gains three new commands: `workspace run-action` (six ship flows including agent-dispatched commit-and-push, create-pr, fix-errors, and resolve-conflicts), `session search`, and `session get-messages` with windowing and body truncation for paging through long transcripts.
+  - New workspaces ship with a gitignored `.agent-contexts/` directory so agents can leave files for other sessions (or themselves later) without polluting diffs.
+  - Helmor CLI and Helmor Skills now install automatically during onboarding — no buttons to click, no Settings dialog to revisit.
+
+### Patch Changes
+
+- [#657](https://github.com/dohooo/helmor/pull/657) [`624dfe6`](https://github.com/dohooo/helmor/commit/624dfe6300d49d34fd318f3fc26fe18466dbc28d) Thanks [@natllian](https://github.com/natllian)! - Fix Cmd+N so it opens the Start Page honoring the per-repo remembered work mode instead of always forcing New Worktree; Shift+Cmd+N still opens Start Page in Just-chat mode.
+
+- [#663](https://github.com/dohooo/helmor/pull/663) [`56153ce`](https://github.com/dohooo/helmor/commit/56153cea7656eb1d509492d0caf461775f1beeca) Thanks [@dohooo](https://github.com/dohooo)! - Polish Slack and Forge context details:
+
+  - Refresh Slack, GitHub, and GitLab detail panels automatically when the panel opens or the window regains focus, plus a manual refresh button in the toolbar next to the open-externally / add-context controls.
+  - Resolve Slack `<@U…>` user mentions to `@displayname` in thread snippets and message bodies so they read like the Slack client instead of opaque user ids.
+  - Cap inline Slack image previews at half the message body width and display the full image at its natural aspect ratio, so tall screenshots no longer crop or leave letterbox padding around the frame.
+  - Fix "Import from Slack desktop" failing with `AES-CBC Unpad Error` when the macOS Keychain holds multiple "Slack Safe Storage" entries (e.g. leftover Mac App Store key alongside the standalone build) by trying every candidate key and using the one that actually decrypts the cookie.
+
+- [#661](https://github.com/dohooo/helmor/pull/661) [`08ce5ff`](https://github.com/dohooo/helmor/commit/08ce5ff0edc3fabfbff97794cd087331ab207d23) Thanks [@natllian](https://github.com/natllian)! - Fix "Import from Slack desktop" failing with a keychain "item not found" error by looking up the Safe Storage key by its stable service name instead of a hard-coded account label, so the import keeps working when Slack renames its keychain account between versions.
+
+- [#662](https://github.com/dohooo/helmor/pull/662) [`d6b0e76`](https://github.com/dohooo/helmor/commit/d6b0e76f814aefabfadf442405fc1b09a41a753d) Thanks [@aidxun](https://github.com/aidxun)! - Keep a collapsed Context sidebar collapsed when switching workspaces.
+
+- [#638](https://github.com/dohooo/helmor/pull/638) [`7bfbd68`](https://github.com/dohooo/helmor/commit/7bfbd68d977825f5413c536427636b6653ffbbb0) Thanks [@aidxun](https://github.com/aidxun)! - Fix Git Changes for local workspaces so Helmor compares files against that workspace's saved target branch instead of another workspace sharing the same repository root.
+
+## 0.25.0
+
+### Minor Changes
+
+- [#654](https://github.com/dohooo/helmor/pull/654) [`bf80653`](https://github.com/dohooo/helmor/commit/bf80653ed47c960447e3ce04ec8f3f281c44d9fd) Thanks [@dohooo](https://github.com/dohooo)! - Add Slack as a Context source.
+
+  - Import every workspace straight from your local Slack desktop session — no bot, no admin OAuth approval.
+  - Browse a unified mentions + DM activity feed in the sidebar, search any workspace with Slack's native operators (`from:@alice`, `in:#chan`, `has:link`, `is:thread`), and click through to a full-fidelity thread preview with inline images and video.
+  - Add a thread to context and the agent receives the conversation as structured prose plus every shared image as direct vision input — no Read-tool detour.
+
+### Patch Changes
+
+- [#652](https://github.com/dohooo/helmor/pull/652) [`6fa372f`](https://github.com/dohooo/helmor/commit/6fa372f3f22b2a10d84b401ab9548f703cc5ed64) Thanks [@natllian](https://github.com/natllian)! - Fix Codex MCP tool-call approvals showing no Allow button. The empty-schema elicitation with `_meta.codex_approval_kind: "mcp_tool_call"` now renders Allow / Allow-for-session / Always-allow / Decline, and the persist choice round-trips back so Codex remembers it.
+
+- [#656](https://github.com/dohooo/helmor/pull/656) [`a285c65`](https://github.com/dohooo/helmor/commit/a285c65cd54b04888378ae6815be7bc97bb59813) Thanks [@dohooo](https://github.com/dohooo)! - Refresh the new-workspace keyboard shortcuts:
+
+  - Cmd+N opens the start composer directly in worktree mode.
+  - Cmd+Shift+N now opens the start composer in Just-chat mode.
+  - The previous Cmd+Shift+N "Add repository" binding is unbound by default and can be re-bound in Settings → Shortcuts.
+
+- [#653](https://github.com/dohooo/helmor/pull/653) [`c420b83`](https://github.com/dohooo/helmor/commit/c420b83ce302bf1e1ed20d0c8666d44c443b77d1) Thanks [@dohooo](https://github.com/dohooo)! - Polish the inspector's Run tab:
+  - Manually stopping a script no longer marks the run as failed — the tab icon returns to its idle state.
+  - Show the active action's name on the Run tab when a workspace has multiple configured, so users can tell which script's output is on screen.
+  - Clicking anywhere on the active Run tab now opens the action menu — no need to aim for the chevron.
+
+## 0.24.0
+
+### Minor Changes
+
+- [#647](https://github.com/dohooo/helmor/pull/647) [`dc6da55`](https://github.com/dohooo/helmor/commit/dc6da55dcd268c43420316f52b27acdbf1454770) Thanks [@dohooo](https://github.com/dohooo)! - Add an optional `stopCommand` per run action that runs as graceful cleanup when you click Stop, with a second click force-killing the process if you don't want to wait.
+
+- [#650](https://github.com/dohooo/helmor/pull/650) [`1912328`](https://github.com/dohooo/helmor/commit/1912328489b52358d34c4216e31759cb867dd68f) Thanks [@natllian](https://github.com/natllian)! - Add an experimental Local LLM panel that runs session title and branch name generation on-device through a bundled llama-server.
+
+### Patch Changes
+
+- [#645](https://github.com/dohooo/helmor/pull/645) [`4564bd8`](https://github.com/dohooo/helmor/commit/4564bd896cb609bd16ee060cd52f3149cf6dc8c4) Thanks [@natllian](https://github.com/natllian)! - Fix the composer's ArrowUp accidentally recalling the previous prompt when the caret crossed into a blank line in the middle of a multi-paragraph draft.
+
+- [#648](https://github.com/dohooo/helmor/pull/648) [`1ef46cb`](https://github.com/dohooo/helmor/commit/1ef46cb37fc201be65db3c88bf83f9e02430817b) Thanks [@natllian](https://github.com/natllian)! - Add an optional sound effect that plays alongside each desktop notification, with 12 sounds to choose from in Settings → General.
+
+## 0.23.6
+
+### Patch Changes
+
+- [#643](https://github.com/dohooo/helmor/pull/643) [`b94fe03`](https://github.com/dohooo/helmor/commit/b94fe03ec16f496d1a2224b6d7640bc07b5bb696) Thanks [@dohooo](https://github.com/dohooo)! - Fix the hover-expanded terminal panel from collapsing the moment you open the Run action dropdown, so the menu now opens at the expanded position instead of an empty patch of inspector chrome.
+
+## 0.23.5
+
+### Patch Changes
+
+- [#632](https://github.com/dohooo/helmor/pull/632) [`b27c5e1`](https://github.com/dohooo/helmor/commit/b27c5e1a771144ec2c72422d9e735ce35ad5f899) Thanks [@aidxun](https://github.com/aidxun)! - Stop eagerly prefetching every changed file's contents when opening the Git Changes panel — Monaco now reads files on demand instead, cutting CPU and IPC traffic on large workspaces.
+
+- [#631](https://github.com/dohooo/helmor/pull/631) [`7093895`](https://github.com/dohooo/helmor/commit/7093895cd375cafd657721879b0211e63b129682) Thanks [@natllian](https://github.com/natllian)! - Fix Shift+Tab on the new-thread page only cycling repositories when focus was inside the composer; the shortcut now works anywhere on the start surface.
+
+- [#633](https://github.com/dohooo/helmor/pull/633) [`fb0bba1`](https://github.com/dohooo/helmor/commit/fb0bba177287b0ff3d65c3725770616cc9e34ffe) Thanks [@natllian](https://github.com/natllian)! - Fix the composer preview popover running off the bottom of the screen when pasting a long-text pill or image on the start page — the preview now shrinks to fit the space between the composer and the screen edge.
+
+- [#629](https://github.com/dohooo/helmor/pull/629) [`eadc55d`](https://github.com/dohooo/helmor/commit/eadc55d13a0952f383425a25de7142bce67f929f) Thanks [@natllian](https://github.com/natllian)! - Fix the inspector Run/Setup tabs' floating Stop/Rerun button only registering clicks on a thin strip near its bottom edge. The xterm WebGL link-layer canvas sits at `z-index: 2` and was painted over the upper portion of the button — the button now sits above the xterm canvas stack so the entire visible rectangle is clickable.
+
+- [#641](https://github.com/dohooo/helmor/pull/641) [`9d7d236`](https://github.com/dohooo/helmor/commit/9d7d236812d3afbed04862aaec45ac820e71dfee) Thanks [@natllian](https://github.com/natllian)! - Restore 60 FPS on inspector and sidebar / inspector drag with thousands of changed files.
+
+## 0.23.4
+
+### Patch Changes
+
+- [#610](https://github.com/dohooo/helmor/pull/610) [`9d3c72b`](https://github.com/dohooo/helmor/commit/9d3c72be40c64375d03a6690a86b2e2a247ea044) Thanks [@natllian](https://github.com/natllian)! - Fix the unread dot on chat rows in the sidebar overlapping the last character of long titles by moving it to the start of the row.
+
+- [#613](https://github.com/dohooo/helmor/pull/613) [`44f17b4`](https://github.com/dohooo/helmor/commit/44f17b4773382b1d287a2dbec7f7fe43161160bb) Thanks [@natllian](https://github.com/natllian)! - Add ArrowUp / ArrowDown history recall in the composer — at the first or last line of the input, the arrow keys step through previously-sent prompts for the current session, just like bash or zsh.
+
+- [#608](https://github.com/dohooo/helmor/pull/608) [`129c24a`](https://github.com/dohooo/helmor/commit/129c24a4c5ca6133ac999995f81b218df723724d) Thanks [@natllian](https://github.com/natllian)! - Remember a separate color theme for light and dark mode, so switching between them no longer resets your accent palette.
+
+- [#615](https://github.com/dohooo/helmor/pull/615) [`9fc32da`](https://github.com/dohooo/helmor/commit/9fc32dadad35b816b033d45e3f52e6b68ef8a7fb) Thanks [@natllian](https://github.com/natllian)! - Fix the +/- line counters in the inspector's change list replaying their roll-in animation every time you switch workspace.
+
+- [#614](https://github.com/dohooo/helmor/pull/614) [`5863ca5`](https://github.com/dohooo/helmor/commit/5863ca582775cd0f7861c54523a6e73040a9386f) Thanks [@natllian](https://github.com/natllian)! - Fix onboarding misreporting Claude or Codex as signed-out, and the login terminal failing with "command not found", on machines that don't have the agent CLIs on PATH — Helmor now uses the bundled binaries it ships with.
+
+- [#616](https://github.com/dohooo/helmor/pull/616) [`e5c8dc2`](https://github.com/dohooo/helmor/commit/e5c8dc2df732c2c3a85bc98afda60519c4267d6f) Thanks [@natllian](https://github.com/natllian)! - Reduce input latency in the embedded terminal so fast typing no longer feels laggy or drops characters on lower-spec hardware.
+
+- [#618](https://github.com/dohooo/helmor/pull/618) [`4726702`](https://github.com/dohooo/helmor/commit/472670251f7ea5758edd68eb1d7a2683395c2fcc) Thanks [@natllian](https://github.com/natllian)! - - Land on the start page after finishing onboarding so users can chat immediately even before adding their first repository.
+
+- [#612](https://github.com/dohooo/helmor/pull/612) [`395eae1`](https://github.com/dohooo/helmor/commit/395eae198c2c195f18a5eface56147a735890069) Thanks [@natllian](https://github.com/natllian)! - Unify font sizes across menus, sidebar, inspector, composer, and other chrome so the app reads on a single semantic typographic scale instead of mixed ad-hoc pixel values.
+
+## 0.23.3
+
+### Patch Changes
+
+- [#601](https://github.com/dohooo/helmor/pull/601) [`d7228c7`](https://github.com/dohooo/helmor/commit/d7228c73fff2cace18d724e1b5e838f4b6e463e4) Thanks [@natllian](https://github.com/natllian)! - Stop dropping in-flight AskUserQuestion prompts when you switch to the Start Page mid-stream.
+
+- [#603](https://github.com/dohooo/helmor/pull/603) [`c5d658a`](https://github.com/dohooo/helmor/commit/c5d658a2c8bf2efa0e87082de074b5d487c38e15) Thanks [@natllian](https://github.com/natllian)! - Fix two sidebar unread-indicator gaps:
+
+  - Chat rows now show the unread / interaction-required dot (hidden on hover so the archive icon can take its place); previously the dot had no carrier on chat entries and was silently dropped.
+  - Background-completed sessions stay marked unread on every follow-up turn instead of only the first one — read-state was keying off the provider's resume token (non-null from the second turn onward), so subsequent completions no-op'd against the DB.
+
+- [#602](https://github.com/dohooo/helmor/pull/602) [`afb8680`](https://github.com/dohooo/helmor/commit/afb868047169d50aa7bfe6df807bf91279496621) Thanks [@natllian](https://github.com/natllian)! - Fix a `WorkspaceBroken` error logged on every git-status poll for chat workspaces, which have no git binding.
+
+- [#607](https://github.com/dohooo/helmor/pull/607) [`aa1f32a`](https://github.com/dohooo/helmor/commit/aa1f32a1993447e6be2b8bb52093c61984d9bea4) Thanks [@natllian](https://github.com/natllian)! - Fix the composer jumping to the bottom when you click into it, and not following the caret when you arrow up past the visible area.
+
+- [#599](https://github.com/dohooo/helmor/pull/599) [`1f78c48`](https://github.com/dohooo/helmor/commit/1f78c485d4c17539a93dc65cfd68f87eac9b458e) Thanks [@dohooo](https://github.com/dohooo)! - Fix a horizontal scrollbar appearing in the Send Feedback dialog textarea so the placeholder wraps within the dialog width.
+
+- [#606](https://github.com/dohooo/helmor/pull/606) [`95d5485`](https://github.com/dohooo/helmor/commit/95d54853282f8cd9238f252d68fcaf0b895fa722) Thanks [@natllian](https://github.com/natllian)! - Fix sidebar workspace hover cards sometimes getting stuck on screen after a streaming session finishes, until the cursor was moved again.
+
+- [#604](https://github.com/dohooo/helmor/pull/604) [`357a572`](https://github.com/dohooo/helmor/commit/357a5728ffa6c7189fd4f06e97e3bb5a6ef56f03) Thanks [@natllian](https://github.com/natllian)! - Fix Shift+Tab on the workspace-start page so cycling repositories no longer also toggles Just Chat or plan mode.
+
+- [#605](https://github.com/dohooo/helmor/pull/605) [`bc8cbe0`](https://github.com/dohooo/helmor/commit/bc8cbe093b3b86b9a2bf03a9c3752fd39d464a0d) Thanks [@natllian](https://github.com/natllian)! - Surface the specific reason a merge is blocked (behind base, draft PR, branch protection, or unstable checks) on the commit button and confirm dialog, for both GitHub and GitLab.
+
+## 0.23.2
+
+### Patch Changes
+
+- [#592](https://github.com/dohooo/helmor/pull/592) [`5ce7f6d`](https://github.com/dohooo/helmor/commit/5ce7f6d1fe2a726433f2e3322460837e636253fd) Thanks [@natllian](https://github.com/natllian)! - Remember the window size and position across restarts.
+
+- [#597](https://github.com/dohooo/helmor/pull/597) [`636fc4a`](https://github.com/dohooo/helmor/commit/636fc4a1583e4ea7b490a82e2940517a117aa918) Thanks [@natllian](https://github.com/natllian)! - Stop clearing the follow-up message queue when switching to the Start Page so queued messages survive the trip back to the workspace.
+
+- [#594](https://github.com/dohooo/helmor/pull/594) [`4906e39`](https://github.com/dohooo/helmor/commit/4906e39ee13646b2aa4e68c690c610e5246430ba) Thanks [@natllian](https://github.com/natllian)! - Fix composer effort/model/permission/fast-mode picks reverting to defaults when switching back to a workspace whose first turn hasn't finished.
+
+- [#595](https://github.com/dohooo/helmor/pull/595) [`e89064e`](https://github.com/dohooo/helmor/commit/e89064e4e2496f2d39cb5451c94c6d343050ca2a) Thanks [@natllian](https://github.com/natllian)! - Fix sidebar and inspector resize stuttering that persisted for the rest of the session after the file editor had been opened.
+
+## 0.23.1
+
+### Patch Changes
+
+- [#590](https://github.com/dohooo/helmor/pull/590) [`2091313`](https://github.com/dohooo/helmor/commit/20913132dd5a447ab50b8067748c442fab4f9153) Thanks [@natllian](https://github.com/natllian)! - Automatically reclaim disk space from composer-pasted images once their session is deleted, so the paste cache no longer grows unbounded.
+
+- [#582](https://github.com/dohooo/helmor/pull/582) [`a06583d`](https://github.com/dohooo/helmor/commit/a06583d44a27dba4306f0f0a0d7e644ee6dbcd4a) Thanks [@natllian](https://github.com/natllian)! - Fix the feedback dialog opening with a brief window jump on workspace pages.
+
+- [#589](https://github.com/dohooo/helmor/pull/589) [`fbc078c`](https://github.com/dohooo/helmor/commit/fbc078c5c998e4b856e1100db6815e7d9b458773) Thanks [@natllian](https://github.com/natllian)! - Fix the chat visibly scrolling from the top down to the latest message every time the editor view closes.
+
+- [#584](https://github.com/dohooo/helmor/pull/584) [`5970940`](https://github.com/dohooo/helmor/commit/597094048bab567d763628b07bffb2217b43b523) Thanks [@natllian](https://github.com/natllian)! - Add four new color themes (Aubergine, Hoth, Choco Mint, Banana) and rework theme switching to repaint every shell region — editor and terminal included.
+
+## 0.23.0
+
+### Minor Changes
+
+- [#570](https://github.com/dohooo/helmor/pull/570) [`b042374`](https://github.com/dohooo/helmor/commit/b042374f44ea304b5b1235dc2259572bc2162152) Thanks [@natllian](https://github.com/natllian)! - Add an opt-in General setting to auto-archive a workspace when its linked PR/MR is merged.
+
+- [#568](https://github.com/dohooo/helmor/pull/568) [`217ab7b`](https://github.com/dohooo/helmor/commit/217ab7b73ca986f76829d5a284c6407b7631e39e) Thanks [@dohooo](https://github.com/dohooo)! - Add a feedback button next to Settings that lets you contribute back to Helmor without leaving the app:
+
+  - Send a quick GitHub issue to the Helmor repo with a two-click confirm.
+  - Use "Quick fix" to open a workspace on your local Helmor clone with the feedback drafted as the first prompt, so an agent can start on the change immediately.
+
+- [#577](https://github.com/dohooo/helmor/pull/577) [`4e03c13`](https://github.com/dohooo/helmor/commit/4e03c13b24413252e13e6073f60297e8c8026913) Thanks [@natllian](https://github.com/natllian)! - Add a "Just Chat" mode on the start page for opening throwaway chat workspaces that aren't bound to any repository.
+
+- [#571](https://github.com/dohooo/helmor/pull/571) [`95280a0`](https://github.com/dohooo/helmor/commit/95280a09517cdccd105e88629c2350f08ac952ba) Thanks [@natllian](https://github.com/natllian)! - New workspaces can now reuse an existing branch instead of always forking a new one, and the start page remembers your last picker choices across restarts.
+
+- [#572](https://github.com/dohooo/helmor/pull/572) [`1fb5faa`](https://github.com/dohooo/helmor/commit/1fb5faae9b12119b546fb5457df8f7fdbabc6f28) Thanks [@natllian](https://github.com/natllian)! - Let the workspace editor edit changes inline from the diff view.
+
+### Patch Changes
+
+- [#564](https://github.com/dohooo/helmor/pull/564) [`bfa0ef1`](https://github.com/dohooo/helmor/commit/bfa0ef19212ce535f02532eece918de0ffbd7670) Thanks [@natllian](https://github.com/natllian)! - Add a Confirm step to sidebar archive actions so workspaces are not archived from a single click.
+
+- [#422](https://github.com/dohooo/helmor/pull/422) [`c2189cf`](https://github.com/dohooo/helmor/commit/c2189cf1c163f3fcd16ebfb04796c46f6c76440d) Thanks [@aidxun](https://github.com/aidxun)! - Remove the inspector sidebar's explicit toggle animations so opening and closing its sections feels more direct and easier to maintain.
+
+- [#575](https://github.com/dohooo/helmor/pull/575) [`28f8471`](https://github.com/dohooo/helmor/commit/28f84711421b4e5cae4028333c2bbc35323a9cfe) Thanks [@natllian](https://github.com/natllian)! - Fix laggy dragging of the inspector sidebar's vertical section dividers, especially when resizing the Scripts section with terminal output.
+
+- [#569](https://github.com/dohooo/helmor/pull/569) [`23fe1cb`](https://github.com/dohooo/helmor/commit/23fe1cbfa596a796000e5c42da98faa6fc76abf2) Thanks [@natllian](https://github.com/natllian)! - Keep the Stop and Rerun buttons reachable in the Setup and Run tabs when "Expand terminals on hover" is turned off.
+
+- [#574](https://github.com/dohooo/helmor/pull/574) [`b1207cf`](https://github.com/dohooo/helmor/commit/b1207cfc89f65e75159946102fb98775a632c18c) Thanks [@natllian](https://github.com/natllian)! - Restore window dragging on the Editor view and Start Page top bars.
+
+- [#576](https://github.com/dohooo/helmor/pull/576) [`9047d91`](https://github.com/dohooo/helmor/commit/9047d912a511edcf57f29df444accd3f0dbaf511) Thanks [@natllian](https://github.com/natllian)! - - Remember the worktree/local mode and branch intent per repository so each project keeps its own defaults.
+
+- [#567](https://github.com/dohooo/helmor/pull/567) [`21a742d`](https://github.com/dohooo/helmor/commit/21a742dbbfd024d7ad5e200d257854e6ead558fd) Thanks [@natllian](https://github.com/natllian)! - Make dragging to resize the left sidebar and right inspector feel fluid, even with a long chat thread open.
+
+## 0.22.1
+
+### Patch Changes
+
+- [#559](https://github.com/dohooo/helmor/pull/559) [`e97aee4`](https://github.com/dohooo/helmor/commit/e97aee47e13bdb8f0093fa8ab199460c6359dd61) Thanks [@natllian](https://github.com/natllian)! - Fix the inspector's Staged Changes / Changes diff when the same file appears in both areas:
+
+  - Each area now shows its own diff (HEAD ↔ index for Staged, index ↔ working tree for Unstaged) instead of a combined HEAD ↔ working-tree view that mixed both.
+  - Clicking the same file across the two areas now actually switches the diff, and the selection highlight only marks the row whose diff is open.
+  - Opening a file from a chat link no longer inherits stale bytes from a diff view, closing a path where saving could overwrite unstaged edits.
+
+- [#561](https://github.com/dohooo/helmor/pull/561) [`9a99586`](https://github.com/dohooo/helmor/commit/9a995861b7605036636991975c7218e8f6d87fe4) Thanks [@natllian](https://github.com/natllian)! - Add Ctrl+Tab quick switch for workspaces (Arc/Cmd+Tab style: hold to cycle, release to commit) and fix the workspace status dot rendering blank on rows with a legacy status spelling.
+
+- [#560](https://github.com/dohooo/helmor/pull/560) [`81f6ec9`](https://github.com/dohooo/helmor/commit/81f6ec975d97761f5d1cb2cd1a1c79c9459d6854) Thanks [@natllian](https://github.com/natllian)! - Fix GitLab pipeline jobs that are queued, preparing, or waiting for a runner showing as gray in the Checks section, so they now match GitLab's own "in progress" indicator.
+
+- [#530](https://github.com/dohooo/helmor/pull/530) [`2b10bc7`](https://github.com/dohooo/helmor/commit/2b10bc78d57ca5373f6741ed239ae723c272276c) Thanks [@taroj1205](https://github.com/taroj1205)! - Add sidebar view controls for filtering, grouping, and sorting workspaces.
+
+- [#556](https://github.com/dohooo/helmor/pull/556) [`cad87df`](https://github.com/dohooo/helmor/commit/cad87df8369a2f1fc4d39844c91b67add6d24f98) Thanks [@natllian](https://github.com/natllian)! - Fix the restored workspace briefly appearing in the wrong sidebar position before snapping into place once the refetch completes.
+
+- [#562](https://github.com/dohooo/helmor/pull/562) [`09ddcd3`](https://github.com/dohooo/helmor/commit/09ddcd36991c353f824b0c4146096852bcd45bfd) Thanks [@natllian](https://github.com/natllian)! - Slim down how Helmor remembers which release-announcement toasts have been dismissed; users upgrading from a much older build may see pending release notes one more time.
+
 ## 0.22.0
 
 ### Minor Changes

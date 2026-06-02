@@ -19,6 +19,7 @@ pub(crate) mod context_usage;
 mod params;
 mod session_id;
 mod state;
+mod workflow_persist;
 
 #[cfg(test)]
 mod event_loop_tests;
@@ -109,6 +110,19 @@ pub(super) fn stream_via_sidecar(
         .clone()
         .unwrap_or_else(|| Uuid::new_v4().to_string());
 
+    // Build Helmor's "you are inside Helmor" system-prompt preamble.
+    // Pulled from the same `session_row` we already read so we don't
+    // borrow the read pool again on the hot path. Re-rendered every
+    // turn so even mid-conversation orchestration asks ("spawn me 3
+    // more workspaces") still see the helmor-cli skill cue.
+    let helmor_prefix = build_helmor_system_prompt_for_workspace(
+        request.helmor_session_id.as_deref(),
+        session_row
+            .as_ref()
+            .and_then(|(_, _, workspace_id)| workspace_id.as_deref()),
+        working_directory,
+    );
+
     // Combine the optional hidden preamble with the user's prompt. Only
     // the wire payload sees the combined string — `prompt` (user text
     // only) is what gets persisted in `persist_user_message` below, so
@@ -118,12 +132,17 @@ pub(super) fn stream_via_sidecar(
         .as_deref()
         .map(str::trim)
         .filter(|p| !p.is_empty());
-    let combined_prompt = match prefix_trimmed {
-        Some(prefix) => format!("{prefix}\n\nUser request:\n{prompt}"),
-        None => prompt.to_string(),
+    let combined_prompt = match (helmor_prefix.as_deref(), prefix_trimmed) {
+        (Some(helmor), Some(caller)) => {
+            format!("{helmor}\n\n{caller}\n\nUser request:\n{prompt}")
+        }
+        (Some(helmor), None) => format!("{helmor}\n\nUser request:\n{prompt}"),
+        (None, Some(caller)) => format!("{caller}\n\nUser request:\n{prompt}"),
+        (None, None) => prompt.to_string(),
     };
 
     let images_for_wire = request.images.clone().unwrap_or_default();
+    let agent_proxy = load_agent_proxy_setting();
     // Read the user's `Claude Code Thinking Display` preference. The setting
     // is global (not per-message), so we resolve it here on every send rather
     // than threading it through `AgentSendRequest`. Anything other than the
@@ -147,6 +166,7 @@ pub(super) fn stream_via_sidecar(
         helmor_session_id: request.helmor_session_id.as_deref(),
         claude_base_url: model.claude_base_url.as_deref(),
         claude_auth_token: model.claude_auth_token.as_deref(),
+        agent_proxy: agent_proxy.as_ref(),
         claude_thinking_display: claude_thinking_display.as_deref(),
         images: &images_for_wire,
     });
@@ -271,6 +291,13 @@ pub(super) fn stream_via_sidecar(
         // `accumulator.turn_at()`. Once the persist loop migrates
         // behind `Action::PersistTurnRange`, this can move into ctx.
         let mut persisted_turn_count: usize = 0;
+
+        // Tees Claude "Dynamic Workflow" task_* lifecycle events into `system`
+        // session_message rows so a historical reload can rebuild the workflow
+        // tree (otherwise it reloads as a bare shell). Lives across the loop so
+        // task_updated (task_id only) can resolve its run from an earlier
+        // task_started.
+        let mut workflow_persist = workflow_persist::WorkflowPersistTracker::default();
 
         // Short-borrow only. The single-writer pool (max_size=1) is shared
         // with every other write in the app; a long-held handle here would
@@ -892,6 +919,23 @@ pub(super) fn stream_via_sidecar(
                     // right position. Subsequent stream events flow
                     // normally once the user submits via
                     // `respondToUserInput`.
+                    let user_input_id = event
+                        .raw
+                        .get("userInputId")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let payload_kind = event
+                        .raw
+                        .get("payload")
+                        .and_then(|p| p.get("kind"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown");
+                    tracing::info!(
+                        rid = %rid,
+                        user_input_id = %user_input_id,
+                        payload_kind = %payload_kind,
+                        "AUQ/elicitation userInputRequest received from sidecar",
+                    );
                     let mut resolved_model = model_copy.cli_model.to_string();
                     let mut final_messages: Vec<ThreadMessageLike> = Vec::new();
 
@@ -935,9 +979,19 @@ pub(super) fn stream_via_sidecar(
                         final_messages,
                     ) {
                         Ok(actions) => {
+                            let emit_count = actions
+                                .iter()
+                                .filter(|a| matches!(a, actions::Action::EmitToFrontend(_)))
+                                .count();
                             for action in actions {
                                 actions::apply_action(action, &apply_ctx);
                             }
+                            tracing::info!(
+                                rid = %rid,
+                                user_input_id = %user_input_id,
+                                emit_count = emit_count,
+                                "AUQ/elicitation forwarded to frontend",
+                            );
                         }
                         Err(err) => {
                             tracing::error!(
@@ -1068,6 +1122,29 @@ pub(super) fn stream_via_sidecar(
                     // `result`, `system`, etc. The pipeline accumulator
                     // owns the dispatch by event type; the state machine
                     // takes its `PipelineEmit` and decides what to send.
+
+                    // Fast mode didn't engage — flip the composer toggle off
+                    // (the notice itself renders via the pipeline below).
+                    if event.event_type() == "system"
+                        && event.raw.get("subtype").and_then(Value::as_str)
+                            == Some("fast_mode_unavailable")
+                    {
+                        if let Some(ctx) = exchange_ctx.as_ref() {
+                            crate::ui_sync::publish(
+                                &app,
+                                crate::ui_sync::UiMutationEvent::FastModeUnavailable {
+                                    session_id: ctx.helmor_session_id.clone(),
+                                    reason: event
+                                        .raw
+                                        .get("reason")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or_default()
+                                        .to_string(),
+                                },
+                            );
+                        }
+                    }
+
                     let line = serde_json::to_string(&event.raw).unwrap_or_default();
                     if !line.is_empty() && line != "{}" {
                         if let Some(pipeline_state) = pipeline.as_mut() {
@@ -1098,6 +1175,10 @@ pub(super) fn stream_via_sidecar(
                                         }
                                     }
                                 }
+
+                                // Tee workflow task_* events into durable
+                                // snapshot rows (see workflow_persist).
+                                workflow_persist.observe(conn, &ctx.helmor_session_id, &event.raw);
                             }
 
                             match turn_session.handle_stream_event(emit) {
@@ -1134,6 +1215,35 @@ pub(super) fn stream_via_sidecar(
     });
 
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn load_agent_proxy_setting() -> Option<Value> {
+    let raw = crate::models::settings::load_setting_value("app.agent_proxy")
+        .ok()
+        .flatten()?;
+    let parsed: Value = serde_json::from_str(&raw).ok()?;
+    let obj = parsed.as_object()?;
+    match obj.get("mode").and_then(Value::as_str) {
+        Some("system") => Some(serde_json::json!({ "mode": "system" })),
+        Some("custom") => {
+            let custom_url = obj
+                .get("customUrl")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())?;
+            Some(serde_json::json!({
+                "mode": "custom",
+                "customUrl": custom_url,
+            }))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn load_agent_proxy_setting() -> Option<Value> {
+    None
 }
 
 fn build_exit_plan_review_message(
@@ -1183,4 +1293,91 @@ fn build_exit_plan_review_message(
         status: None,
         streaming: None,
     }
+}
+
+/// Build the Helmor system-prompt prefix that gets prepended to the
+/// agent's wire payload. Returns `None` when we can't resolve enough
+/// context (missing workspace id, or the workspace row is gone) —
+/// callers fall through to "no Helmor prefix this turn" rather than
+/// blocking the send.
+///
+/// Exposed `pub(crate)` so both the in-app streaming path and the
+/// standalone-CLI path in `service::send_message` share the same
+/// preamble builder — keeps Chat-vs-workspace routing and all the
+/// workspace-bound fields in one place.
+///
+/// Lookups against the workspace record happen against the read pool;
+/// failures degrade gracefully.
+pub(crate) fn build_helmor_system_prompt_for_workspace(
+    helmor_session_id: Option<&str>,
+    workspace_id: Option<&str>,
+    working_directory: &std::path::Path,
+) -> Option<String> {
+    use crate::agents::system_prompt::{
+        build_helmor_chat_prompt, build_helmor_system_prompt, HelmorChatPromptContext,
+        HelmorSystemPromptContext,
+    };
+
+    let workspace_id = workspace_id?;
+
+    // Skip the preamble entirely when we can't resolve the workspace
+    // row. The agent gets no Helmor framing this turn rather than a
+    // degraded one with a UUID-as-workspace-label and a misleading
+    // "target branch not configured" nag — matches the function's
+    // doc-comment contract ("Returns `None` when ... no workspace row
+    // found"). Orphan sessions (workspace deleted but session row
+    // lingering) are the realistic trigger.
+    let record = crate::models::workspaces::load_workspace_record_by_id(workspace_id)
+        .ok()
+        .flatten()?;
+
+    // CLI invocation the agent should call. On release this is the
+    // canonical `helmor` symlink on PATH; on dev it's the absolute
+    // path of THIS process's sibling `helmor-cli`. The dev branch
+    // deliberately avoids the bare `helmor-dev` name because under
+    // Helmor's worktree-based dev workflow every worktree compiles
+    // its own CLI binary, and a global `/usr/local/bin/helmor-dev`
+    // symlink (if it exists) can only target one of them — the other
+    // dev instances' agents would silently talk to the wrong build.
+    // See `crate::cli::agent_invocation_path` for the full rationale.
+    let cli_command_name = crate::cli::agent_invocation_path();
+
+    // Chat-mode workspaces have no repo / no worktree / no target
+    // branch. The workspace-bound preamble would inject misleading
+    // hints (a synthetic workspace label, a `~/helmor/chats/...`
+    // working directory the user never sees, a "configure a target
+    // branch" nag, and a `.agent-contexts/` scratch dir that lives in
+    // a non-git directory). Route them through the smaller chat-only
+    // template instead.
+    if record.mode.is_chat() {
+        return Some(build_helmor_chat_prompt(&HelmorChatPromptContext {
+            cli_command_name,
+        }));
+    }
+
+    let workspace_label = format!("{}/{}", record.repo_name, record.directory_name);
+
+    // Target branch: prefer the user-configured intended target,
+    // fall back to the repo's default branch. Wrap as `origin/<x>`
+    // so the diff/PR hints are immediately usable.
+    let target_branch_raw = record
+        .intended_target_branch
+        .clone()
+        .or_else(|| record.default_branch.clone())
+        .filter(|s| !s.trim().is_empty());
+    let base_branch = target_branch_raw.clone();
+    let target_branch = target_branch_raw.as_deref().map(|b| format!("origin/{b}"));
+
+    let linked_directories =
+        crate::agents::streaming::lookup_workspace_linked_directories(helmor_session_id);
+
+    let ctx = HelmorSystemPromptContext {
+        workspace_label,
+        workspace_root_path: working_directory.display().to_string(),
+        target_branch,
+        base_branch,
+        linked_directories,
+        cli_command_name,
+    };
+    Some(build_helmor_system_prompt(&ctx))
 }
