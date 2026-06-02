@@ -249,42 +249,38 @@ impl WorkspaceForgeBackend for GitlabBackend {
     fn lookup_change_request(
         &self,
         workspace_id: &str,
-        _runner: ForgeRunner,
+        runner: ForgeRunner,
     ) -> Result<Option<ChangeRequestInfo>> {
-        // GitLab routing remains laptop-only for now — the GitLab
-        // module's `glab` shell-outs still bypass the `ForgeRunner`
-        // seam. Follow-up PR will route them through `forge.exec`
-        // alongside the GitHub backend.
-        gitlab::lookup_workspace_mr(workspace_id)
+        gitlab::lookup_workspace_mr(workspace_id, runner)
     }
 
-    fn action_status(&self, workspace_id: &str, _runner: ForgeRunner) -> Result<ForgeActionStatus> {
-        gitlab::lookup_workspace_mr_action_status(workspace_id)
+    fn action_status(&self, workspace_id: &str, runner: ForgeRunner) -> Result<ForgeActionStatus> {
+        gitlab::lookup_workspace_mr_action_status(workspace_id, runner)
     }
 
     fn check_insert_text(
         &self,
         workspace_id: &str,
         item_id: &str,
-        _runner: ForgeRunner,
+        runner: ForgeRunner,
     ) -> Result<String> {
-        gitlab::lookup_workspace_mr_check_insert_text(workspace_id, item_id)
+        gitlab::lookup_workspace_mr_check_insert_text(workspace_id, item_id, runner)
     }
 
     fn merge_change_request(
         &self,
         workspace_id: &str,
-        _runner: ForgeRunner,
+        runner: ForgeRunner,
     ) -> Result<Option<ChangeRequestInfo>> {
-        gitlab::merge_workspace_mr(workspace_id)
+        gitlab::merge_workspace_mr(workspace_id, runner)
     }
 
     fn close_change_request(
         &self,
         workspace_id: &str,
-        _runner: ForgeRunner,
+        runner: ForgeRunner,
     ) -> Result<Option<ChangeRequestInfo>> {
-        gitlab::close_workspace_mr(workspace_id)
+        gitlab::close_workspace_mr(workspace_id, runner)
     }
 
     fn inbox_kind_labels(&self) -> Vec<InboxKindLabels> {

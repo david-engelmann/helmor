@@ -17,7 +17,7 @@ pub(super) fn load_review_decision(context: &GitlabContext, mr_iid: i64) -> Resu
         "projects/{}/merge_requests/{mr_iid}/approvals",
         encode_path_component(&context.full_path),
     );
-    let output = glab_api(&context.remote.host, [endpoint.as_str()])?;
+    let output = glab_api(&context.runner, &context.remote.host, [endpoint.as_str()])?;
     if !output.success {
         return Ok(None);
     }
