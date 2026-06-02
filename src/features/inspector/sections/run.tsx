@@ -28,6 +28,7 @@ import {
 	attach,
 	cleanupScript,
 	detach,
+	getScriptState,
 	resizeScript,
 	type ScriptStatus,
 	startScript,
@@ -209,12 +210,47 @@ export function RunTab({
 			return;
 		}
 
+		// Lazy-mount latch (mirrors `setup.tsx`'s `needsLazyMount`).
+		// When attach() runs before any entry exists — and then chunks
+		// arrive before xterm mounts (the common case for a remote
+		// script that exits in <16 ms once `forge.exec` returns) —
+		// the first non-idle status change flips `hasRun` true, which
+		// mounts xterm, and the requestAnimationFrame replay walks
+		// `entry.chunks` from the store into the freshly-mounted
+		// terminal. Without this, the chunks land in
+		// `listener.onChunk` while `termRef.current` is still null
+		// and silently disappear; the panel keeps showing the empty-
+		// state placeholder even though the script ran.
+		let needsLazyMount = true;
+
 		const existing = attach(
 			workspaceId,
 			"run",
 			{
 				onChunk: (data) => termRef.current?.write(data),
-				onStatusChange: setStatus,
+				onStatusChange: (s) => {
+					setStatus(s);
+					if (s !== "idle" && needsLazyMount) {
+						needsLazyMount = false;
+						setHasRun(true);
+						// Replay every chunk buffered before TerminalOutput
+						// mounted so the panel reflects the live entry
+						// even when the script exited before React
+						// flushed the `hasRun(true)` re-render.
+						requestAnimationFrame(() => {
+							const entry = getScriptState(
+								workspaceId,
+								"run",
+								activeRunActionId,
+							);
+							const t = termRef.current;
+							if (!entry || !t) return;
+							t.clear();
+							if (entry.truncated) t.write(TRUNCATION_NOTICE);
+							for (const chunk of entry.chunks) t.write(chunk);
+						});
+					}
+				},
 				onStoppingChange: setStopping,
 				onUrlsChange: (urls) => onUrlsChange?.(urls),
 				// When a fresh run is triggered externally (e.g. Cmd+R while
@@ -230,6 +266,7 @@ export function RunTab({
 		);
 
 		if (existing) {
+			needsLazyMount = false;
 			setHasRun(true);
 			setStatus(existing.status);
 			setStopping(existing.stopping);
