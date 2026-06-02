@@ -1061,7 +1061,13 @@ export function WorkspaceEditorSurface({
 			}
 
 			const api = await import("@/lib/api");
-			const result = await api.readEditorFile(file.absolutePath);
+			const result = workspaceRootPath
+				? await api.readWorkspaceFile(
+						workspaceRootPath,
+						api.toWorkspaceRelativePath(workspaceRootPath, file.absolutePath),
+						workspaceId ?? undefined,
+					)
+				: await api.readEditorFile(file.absolutePath);
 			publishSessionChange({
 				kind: "file",
 				path: result.path,
@@ -1090,15 +1096,19 @@ export function WorkspaceEditorSurface({
 		}
 		try {
 			const api = await import("@/lib/api");
-			const result = await api.writeEditorFile(
-				latest.path,
-				latest.modifiedText,
-			);
+			const result = workspaceRootPath
+				? await api.writeWorkspaceFile(
+						workspaceRootPath,
+						api.toWorkspaceRelativePath(workspaceRootPath, latest.path),
+						latest.modifiedText,
+						workspaceId ?? undefined,
+					)
+				: await api.writeEditorFile(latest.path, latest.modifiedText);
 			onChangeSessionRef.current({
 				...latest,
 				originalText: latest.modifiedText,
 				dirty: false,
-				mtimeMs: result.mtimeMs,
+				mtimeMs: result.mtimeMs ?? Date.now(),
 			});
 			if (workspaceRootPath) {
 				void queryClient.invalidateQueries({

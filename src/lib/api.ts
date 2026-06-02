@@ -3490,16 +3490,18 @@ export async function listWorkspaceChanges(
 	workspaceRootPath: string,
 	workspaceId?: string | null,
 ): Promise<InspectorFileItem[]> {
-	try {
-		return await invoke<InspectorFileItem[]>("list_workspace_changes", {
-			workspaceRootPath,
-			workspaceId: workspaceId ?? null,
-		});
-	} catch (error) {
-		throw new Error(
-			describeInvokeError(error, "Unable to list workspace changes."),
-		);
-	}
+	// Routes through the binding-aware `get_workspace_changes` so a
+	// workspace pinned to a remote runtime serves the inspector's
+	// "changes" list from the remote container, not the laptop.
+	// `includeContent: false` keeps the wire small — the inspector
+	// only renders file rows; per-file content is fetched lazily by
+	// the diff viewer via `readWorkspaceFile`.
+	const result = await getWorkspaceChanges(
+		workspaceRootPath,
+		false,
+		workspaceId ?? undefined,
+	);
+	return result.items;
 }
 
 export async function listEditorFilesWithContent(
