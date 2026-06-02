@@ -1,3 +1,4 @@
+pub(crate) mod agent_contexts;
 pub(crate) mod archive;
 pub(crate) mod branching;
 pub mod files;
@@ -7,6 +8,7 @@ pub mod port_allocation;
 pub mod pr_sync;
 pub mod runtime_registry;
 pub mod scripts;
+pub(crate) mod ship_actions;
 pub mod sidebar_order;
 pub mod state;
 pub mod status;

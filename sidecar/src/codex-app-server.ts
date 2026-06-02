@@ -10,6 +10,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import readline from "node:readline";
+import { type AgentProxySettings, buildAgentProxyEnv } from "./agent-proxy.js";
 import { logger } from "./logger.js";
 
 // ---------------------------------------------------------------------------
@@ -56,6 +57,7 @@ export interface CodexAppServerOptions {
 	onRequest: OnRequest;
 	onExit: OnExit;
 	onError: OnError;
+	agentProxy?: AgentProxySettings;
 	/** Fired when Codex's own SSE retry loop emits a "Reconnecting…"
 	 *  line on stderr. The manager uses this to (a) pulse a synthetic
 	 *  heartbeat keeping Rust's 45s watchdog satisfied, (b) forward a
@@ -83,15 +85,23 @@ export function buildCodexAppServerArgs(): string[] {
 
 /**
  * Codex ships ripgrep next to its binary and spawns it by name on PATH for
- * in-thread search. Two layouts to support:
- *   - dev (node_modules):  <pkg>/vendor/<triple>/codex/codex
- *                          <pkg>/vendor/<triple>/path/rg          ← parent's sibling
- *   - staged (release):    dist/vendor/codex/codex
- *                          dist/vendor/codex/path/rg              ← own sibling
+ * in-thread search. Layouts to support (codex 0.134 renamed `path` →
+ * `codex-path` and nested the binary under `bin/`):
+ *   - dev 0.134+ (node_modules):  <pkg>/vendor/<triple>/bin/codex
+ *                                 <pkg>/vendor/<triple>/codex-path/rg  ← parent's sibling
+ *   - dev legacy (node_modules):  <pkg>/vendor/<triple>/codex/codex
+ *                                 <pkg>/vendor/<triple>/path/rg        ← parent's sibling
+ *   - staged (release):           dist/vendor/codex/codex
+ *                                 dist/vendor/codex/path/rg            ← own sibling
  */
-function buildCodexEnv(binaryPath: string): NodeJS.ProcessEnv {
+export function buildCodexEnv(
+	binaryPath: string,
+	agentProxy?: AgentProxySettings,
+): NodeJS.ProcessEnv {
 	const env = { ...process.env };
 	const candidates = [
+		join(dirname(binaryPath), "..", "codex-path"),
+		join(dirname(binaryPath), "codex-path"),
 		join(dirname(binaryPath), "..", "path"),
 		join(dirname(binaryPath), "path"),
 	];
@@ -100,6 +110,8 @@ function buildCodexEnv(binaryPath: string): NodeJS.ProcessEnv {
 		const sep = process.platform === "win32" ? ";" : ":";
 		env.PATH = `${pathDir}${sep}${env.PATH ?? ""}`;
 	}
+	const proxyEnv = buildAgentProxyEnv(agentProxy);
+	if (proxyEnv) Object.assign(env, proxyEnv);
 	return env;
 }
 
@@ -122,7 +134,7 @@ export class CodexAppServer {
 		this.child = spawn(opts.binaryPath, buildCodexAppServerArgs(), {
 			cwd: opts.cwd,
 			stdio: ["pipe", "pipe", "pipe"],
-			env: buildCodexEnv(opts.binaryPath),
+			env: buildCodexEnv(opts.binaryPath, opts.agentProxy),
 		});
 
 		this.output = readline.createInterface({ input: this.child.stdout });

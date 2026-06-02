@@ -49,7 +49,7 @@ export function FontPicker({
 			placeholder={effectivePlaceholder}
 			aria-label={ariaLabel}
 			className={cn(
-				"h-7 w-48 px-2 py-0 font-mono text-[10px] md:text-[10px]",
+				"h-7 w-48 px-2 py-0 font-mono text-ui md:text-ui",
 				className,
 			)}
 			spellCheck={false}

@@ -2,6 +2,214 @@
 	"_readme": "AUTO-GENERATED from .announcements during `bun run release:version`. Each item is one released version's in-app announcement. Do not edit released entries by hand.",
 	"items": [
 		{
+			"releaseVersion": "0.28.0",
+			"items": [
+				{
+					"text": "Claude's dynamic workflows now appear as a live card, and the new /workflows command opens a keyboard-navigable drill-down into each run's phases, agents, and results."
+				},
+				{
+					"text": "Typing \"workflow\" or \"ultrathink\" in the composer now highlights the word to cue the matching mode."
+				},
+				{
+					"text": "Claude Opus 4.8 (1M context) is now the default model, listed above 4.7 and 4.6 in the picker."
+				}
+			]
+		},
+		{
+			"releaseVersion": "0.27.0",
+			"items": [
+				{
+					"text": "Queued messages now have an Edit button — click it to pull a queued message back into the composer for revision, leaving the rest of the queue in place."
+				},
+				{
+					"text": "Smart Triage: let the local LLM scan Slack / Lark / GitHub / GitLab and pre-fill AI workspaces for actionable items.",
+					"action": {
+						"label": "Open Experimental",
+						"value": {
+							"type": "openSettings",
+							"section": "experimental"
+						}
+					}
+				}
+			]
+		},
+		{
+			"releaseVersion": "0.26.0",
+			"items": [
+				{
+					"text": "Coding agents in Helmor can now drive Helmor itself — spawn sibling workspaces, dispatch ship actions, and read other agents' transcripts. Just ask them in any chat. Helmor CLI and skills install automatically in the background."
+				},
+				{
+					"text": "Every new workspace now has a gitignored `.agent-contexts/` directory agents can use to share files across sessions without polluting diffs."
+				},
+				{
+					"text": "Slack, GitHub, and GitLab context detail panels now refresh automatically when you open them or refocus Helmor, and there's a manual refresh button in the toolbar.",
+					"action": {
+						"label": "Open Context",
+						"value": {
+							"type": "setRightSidebarMode",
+							"mode": "context"
+						}
+					}
+				}
+			]
+		},
+		{
+			"releaseVersion": "0.25.0",
+			"items": [
+				{
+					"text": "Cmd+Shift+N now opens the new-workspace composer in Just-chat mode, and Cmd+N opens it in worktree mode.",
+					"action": {
+						"label": "Open Shortcuts",
+						"value": {
+							"type": "openSettings",
+							"section": "shortcuts"
+						}
+					}
+				},
+				{
+					"text": "Slack is now a Context source — connect your workspaces and the agent can read threads (with images) the same way you do.",
+					"action": {
+						"label": "Open Context",
+						"value": {
+							"type": "setRightSidebarMode",
+							"mode": "context"
+						}
+					}
+				}
+			]
+		},
+		{
+			"releaseVersion": "0.24.0",
+			"items": [
+				{
+					"text": "Local LLM lands as a very experimental preview — it powers session title and branch name generation for now. More features coming soon.",
+					"action": {
+						"label": "Open Local LLM",
+						"value": {
+							"type": "openSettings",
+							"section": "experimental"
+						}
+					}
+				},
+				{
+					"text": "Desktop notifications can now play a sound — pick from 12 effects in Settings → General.",
+					"action": {
+						"label": "Open General",
+						"value": {
+							"type": "openSettings",
+							"section": "general"
+						}
+					}
+				},
+				{
+					"text": "Each run script can now declare an optional cleanup command that runs when you click Stop — handy for docker compose, supabase, or anything with external resources to tear down. A second Stop click force-kills if you don't want to wait.",
+					"action": {
+						"label": "Open Run scripts",
+						"value": {
+							"type": "openSettings",
+							"section": "repo:current"
+						}
+					}
+				}
+			]
+		},
+		{
+			"releaseVersion": "0.23.5",
+			"items": [
+				{
+					"text": "You can now configure multiple run scripts per repository",
+					"action": {
+						"label": "Open Run scripts",
+						"value": {
+							"type": "openSettings",
+							"section": "repo:current"
+						}
+					}
+				}
+			]
+		},
+		{
+			"releaseVersion": "0.23.4",
+			"items": [
+				{
+					"text": "Press ArrowUp / ArrowDown in the composer to step through previously-sent prompts for the current session — like bash or zsh."
+				}
+			]
+		},
+		{
+			"releaseVersion": "0.23.1",
+			"items": [
+				{
+					"text": "Four new color themes are now available — Aubergine, Hoth, Choco Mint, and Banana.",
+					"action": {
+						"label": "Open Appearance",
+						"value": {
+							"type": "openSettings",
+							"section": "appearance"
+						}
+					}
+				}
+			]
+		},
+		{
+			"releaseVersion": "0.23.0",
+			"items": [
+				{
+					"text": "Workspaces can now archive themselves automatically once their linked PR/MR is merged.",
+					"action": {
+						"label": "Open General",
+						"value": {
+							"type": "openSettings",
+							"section": "general"
+						}
+					}
+				},
+				{
+					"text": "You can now edit code right from the diff view."
+				},
+				{
+					"text": "Send Helmor feedback right from the app — file a GitHub issue or hit \"Quick fix\" to open a workspace with the feedback as the first prompt."
+				},
+				{
+					"text": "Pick \"Just Chat\" on the start page to open a workspace without binding it to a repo.",
+					"action": {
+						"label": "Open Start",
+						"value": {
+							"type": "openStartPage"
+						}
+					}
+				},
+				{
+					"text": "You can now reuse an existing branch when creating a workspace.",
+					"action": {
+						"label": "Open Start",
+						"value": {
+							"type": "openStartPage"
+						}
+					}
+				}
+			]
+		},
+		{
+			"releaseVersion": "0.22.1",
+			"items": [
+				{
+					"text": "You can now hold Ctrl+Tab to cycle through recently used workspaces — release to switch, just like Cmd+Tab.",
+					"action": {
+						"label": "Customize Shortcut",
+						"value": {
+							"type": "openSettings",
+							"section": "shortcuts"
+						}
+					}
+				},
+				{
+					"text": "The sidebar now has view controls for filtering by repository, changing grouping, and choosing sort order."
+				}
+			]
+		},
+		{
 			"releaseVersion": "0.22.0",
 			"items": [
 				{

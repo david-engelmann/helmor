@@ -52,12 +52,13 @@ import {
 	findInitialWorkspaceId,
 	findReplacementWorkspaceIdAfterRemoval,
 	hasWorkspaceId,
-	insertRowByCreatedAtDesc,
+	insertRowBySidebarOrder,
 	reorderWorkspaceInSidebar,
 	rowToWorkspaceSummary,
 	summaryToArchivedRow,
 	workspaceGroupIdFromStatus,
 } from "@/lib/workspace-helpers";
+import { useShellEvent } from "@/shell/event-bus";
 import {
 	type PendingArchiveEntry,
 	type PendingCreationEntry,
@@ -108,7 +109,7 @@ export function useWorkspacesSidebarController({
 	pushWorkspaceToast,
 }: UseWorkspacesSidebarControllerArgs) {
 	const queryClient = useQueryClient();
-	const { settings } = useSettings();
+	const { settings, updateSettings } = useSettings();
 	const [addingRepository, setAddingRepository] = useState(false);
 	const [isCloneDialogOpen, setIsCloneDialogOpen] = useState(false);
 	const [cloneDefaultDirectory, setCloneDefaultDirectory] = useState<
@@ -165,6 +166,10 @@ export function useWorkspacesSidebarController({
 
 	const baseGroups = groupsQuery.data ?? [];
 	const baseArchivedSummaries = archivedQuery.data ?? [];
+	const availableRepoIds = useMemo(
+		() => (repositoriesQuery.data ?? []).map((repository) => repository.id),
+		[repositoriesQuery.data],
+	);
 	const projectedSidebar = useMemo(
 		() =>
 			projectVisualSidebar(
@@ -182,13 +187,21 @@ export function useWorkspacesSidebarController({
 					),
 				},
 				settings.sidebarGrouping,
+				{
+					availableRepoIds,
+					repoFilterIds: settings.sidebarRepoFilterIds,
+					sort: settings.sidebarSort,
+				},
 			),
 		[
+			availableRepoIds,
 			baseArchivedSummaries,
 			baseGroups,
 			pendingArchives,
 			pendingCreations,
 			settings.sidebarGrouping,
+			settings.sidebarRepoFilterIds,
+			settings.sidebarSort,
 		],
 	);
 	const groups = projectedSidebar.groups;
@@ -314,6 +327,17 @@ export function useWorkspacesSidebarController({
 			if (disposed) {
 				return;
 			}
+			// Auto-archive has no pendingArchives / gate to roll back, and the
+			// destructive "Permanently Delete" recovery toast is wrong for a
+			// failure the user didn't initiate. Surface a calm notice instead.
+			if (payload.origin === "autoAfterMerge") {
+				const { message } = extractError(
+					payload,
+					"Unable to auto-archive workspace.",
+				);
+				pushWorkspaceToast(message, "Auto-archive failed", "default");
+				return;
+			}
 			rollbackArchivedWorkspace(
 				payload.workspaceId,
 				payload,
@@ -329,6 +353,17 @@ export function useWorkspacesSidebarController({
 
 		void listenArchiveExecutionSucceeded((payload) => {
 			if (disposed) {
+				return;
+			}
+			// Auto-archive bypasses the optimistic pendingArchives flow, so the
+			// regular gate.end -> reconcile path is a no-op for it. Trigger the
+			// sidebar reconcile ourselves; otherwise the row stays in its
+			// pre-archive group until something else refetches.
+			if (payload.origin === "autoAfterMerge") {
+				requestSidebarReconcile(queryClient);
+				void queryClient.invalidateQueries({
+					queryKey: helmorQueryKeys.archivedWorkspaces,
+				});
 				return;
 			}
 			setPendingArchives((current) => {
@@ -361,7 +396,7 @@ export function useWorkspacesSidebarController({
 			unlistenFailure?.();
 			unlistenSuccess?.();
 		};
-	}, [archiveGate, queryClient, rollbackArchivedWorkspace]);
+	}, [archiveGate, pushWorkspaceToast, queryClient, rollbackArchivedWorkspace]);
 
 	useEffect(() => {
 		if (pendingArchives.size === 0) {
@@ -1479,20 +1514,23 @@ export function useWorkspacesSidebarController({
 				const shouldNavigate =
 					!selectedWorkspaceId || selectedWorkspaceId === workspaceId;
 				if (shouldNavigate) {
-					if (onOpenNewWorkspace) {
+					// Advance to the neighbour in the same group (then next group,
+					// then archived) — same as delete. Only fall back to the start
+					// page when nothing is left to select.
+					const nextWorkspaceId = findReplacementWorkspaceIdAfterRemoval({
+						currentGroups: groups,
+						currentArchivedRows: archivedRows,
+						nextGroups: optimisticVisual.groups,
+						nextArchivedRows: optimisticVisual.archivedRows,
+						removedWorkspaceId: workspaceId,
+					});
+					if (nextWorkspaceId) {
+						prefetchWorkspace(nextWorkspaceId);
+						onSelectWorkspace(nextWorkspaceId);
+					} else if (onOpenNewWorkspace) {
 						onOpenNewWorkspace();
 					} else {
-						const nextWorkspaceId = findReplacementWorkspaceIdAfterRemoval({
-							currentGroups: groups,
-							currentArchivedRows: archivedRows,
-							nextGroups: optimisticVisual.groups,
-							nextArchivedRows: optimisticVisual.archivedRows,
-							removedWorkspaceId: workspaceId,
-						});
-						if (nextWorkspaceId) {
-							prefetchWorkspace(nextWorkspaceId);
-						}
-						onSelectWorkspace(nextWorkspaceId);
+						onSelectWorkspace(null);
 					}
 				}
 
@@ -1590,16 +1628,18 @@ export function useWorkspacesSidebarController({
 				archivedSummary.status,
 				archivedSummary.pinnedAt,
 			);
-			// Sorted insert by createdAt DESC so the row lands where the server
-			// will place it on refetch — avoids the reorder flicker we'd get from
-			// unconditionally prepending.
+			// Sorted insert by `display_order ASC, created_at DESC` (same key the
+			// backend uses for live groups) so the row lands where the refetch
+			// will place it — avoids the reorder flicker we'd get from a naive
+			// prepend or a createdAt-only sort. The archived summary carries
+			// `displayOrder`, which restore_workspace_impl does NOT reset.
 			queryClient.setQueryData(helmorQueryKeys.workspaceGroups, (current) =>
 				Array.isArray(current)
 					? (current as typeof groups).map((group) =>
 							group.id === targetGroupId
 								? {
 										...group,
-										rows: insertRowByCreatedAtDesc(group.rows, placeholderRow),
+										rows: insertRowBySidebarOrder(group.rows, placeholderRow),
 									}
 								: group,
 						)
@@ -1665,6 +1705,11 @@ export function useWorkspacesSidebarController({
 		],
 	);
 
+	// Bridge for surfaces outside the controller (e.g. composer triage Dismiss).
+	useShellEvent("request-archive-workspace", (event) => {
+		handleArchiveWorkspace(event.workspaceId);
+	});
+
 	const handleRestoreWorkspace = useCallback(
 		(workspaceId: string) => {
 			void (async () => {
@@ -1712,6 +1757,9 @@ export function useWorkspacesSidebarController({
 		cloneDefaultDirectory,
 		groups,
 		sidebarGrouping: settings.sidebarGrouping,
+		sidebarRepoFilterIds: settings.sidebarRepoFilterIds,
+		sidebarSort: settings.sidebarSort,
+		updateSettings,
 		handleAddRepository,
 		handleArchiveWorkspace,
 		handleCloneFromUrl,

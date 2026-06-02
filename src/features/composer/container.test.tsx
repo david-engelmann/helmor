@@ -503,8 +503,8 @@ describe("WorkspaceComposerContainer", () => {
 				value={{
 					settings: {
 						...DEFAULT_SETTINGS,
-						kanbanViewState: {
-							...DEFAULT_SETTINGS.kanbanViewState,
+						startSurfacePreferences: {
+							...DEFAULT_SETTINGS.startSurfacePreferences,
 							createState: "backlog",
 						},
 					},
@@ -543,8 +543,8 @@ describe("WorkspaceComposerContainer", () => {
 		composerMockState.lastOnStartSubmitModeChange?.("startNow");
 
 		expect(updateSettings).toHaveBeenCalledWith({
-			kanbanViewState: {
-				...DEFAULT_SETTINGS.kanbanViewState,
+			startSurfacePreferences: {
+				...DEFAULT_SETTINGS.startSurfacePreferences,
 				createState: "in-progress",
 			},
 		});
@@ -967,6 +967,7 @@ describe("WorkspaceComposerContainer", () => {
 				expect(composerMockState.lastSlashCommands.map((c) => c.name)).toEqual([
 					"add-dir",
 					"goal",
+					"workflows",
 					"compact",
 					"clear",
 				]);
@@ -1032,6 +1033,7 @@ describe("WorkspaceComposerContainer", () => {
 				expect(composerMockState.lastSlashCommands.map((c) => c.name)).toEqual([
 					"add-dir",
 					"goal",
+					"workflows",
 					"clear",
 				]);
 			});
