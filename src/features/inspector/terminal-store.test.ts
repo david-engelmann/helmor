@@ -267,17 +267,20 @@ describe("terminal-store dispatch", () => {
 		const instance = createTerminal("repo-1", "ws-remote", "/remote/path");
 		if (!instance) throw new Error("createTerminal returned null");
 		await vi.waitFor(() => expect(remoteCallback).toBeTypeOf("function"));
+		const fire = remoteCallback as unknown as (
+			e: TerminalEventNotification,
+		) => void;
 
 		// Push the remote shape; the adapter should translate it into
 		// the same chunk-buffer the local path uses.
-		remoteCallback?.({
+		fire({
 			terminalId: instance.id,
 			event: { kind: "stdout", data: "$ pwd\r\n/remote/path\r\n" },
 		});
 		const list = getTerminals("ws-remote");
 		expect(list[0]?.chunks.join("")).toBe("$ pwd\r\n/remote/path\r\n");
 
-		remoteCallback?.({
+		fire({
 			terminalId: instance.id,
 			event: { kind: "exited", code: 0 },
 		});

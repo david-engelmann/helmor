@@ -257,11 +257,11 @@ describe("script-store dispatch (remote runtime)", () => {
 			workspaceRootPath: "/code",
 		});
 		await vi.waitFor(() => expect(remoteCallback).toBeTypeOf("function"));
-		remoteCallback?.({
-			terminalId: "x",
-			event: { kind: "stdout", data: "hello\n" },
-		});
-		remoteCallback?.({ terminalId: "x", event: { kind: "exited", code: 0 } });
+		const fire = remoteCallback as unknown as (
+			e: TerminalEventNotification,
+		) => void;
+		fire({ terminalId: "x", event: { kind: "stdout", data: "hello\n" } });
+		fire({ terminalId: "x", event: { kind: "exited", code: 0 } });
 
 		const entry = getScriptState("ws-remote", "run", "action-1");
 		expect(entry?.chunks.join("")).toBe("hello\n");
