@@ -112,6 +112,21 @@ pub trait RemoteRuntime: Send + Sync {
     /// in-process runtime can't be "disconnected".
     fn ping(&self) -> Result<()>;
 
+    /// Spawn one of the bundled forge CLIs (`gh` / `glab`) on the
+    /// runtime's filesystem and return its captured output. The local
+    /// impl shells out via `forge::command::run_command_via_runtime`
+    /// (still uses the laptop's bundled binary, just lifted under the
+    /// same trait so workspace-scoped forge ops have one dispatcher);
+    /// the remote impl forwards through `forge.exec` so the daemon
+    /// runs its own bundled `gh`/`glab` and the laptop's GitHub auth
+    /// is never touched for a remote-bound workspace.
+    fn forge_exec(
+        &self,
+        _params: super::methods::ForgeExecParams,
+    ) -> Result<super::methods::ForgeExecResult> {
+        anyhow::bail!("forge.exec is not supported on this runtime (tombstoned or unbacked)")
+    }
+
     /// Open a remote PTY-backed terminal. The default `Err` is what
     /// [`LocalRuntime`] (and tombstones) return — local terminals
     /// route through `workspace::scripts`, not the remote-runner
@@ -501,6 +516,33 @@ impl RemoteRuntime for LocalRuntime {
         // poller skips them entirely, but the method still has to exist
         // for trait-object dispatch.
         Ok(())
+    }
+
+    fn forge_exec(
+        &self,
+        params: super::methods::ForgeExecParams,
+    ) -> Result<super::methods::ForgeExecResult> {
+        // Local impl: same `forge::command` path the existing
+        // shell-outs use, so byte-for-byte equivalence with the
+        // pre-routing behaviour for unbound / `local`-pinned
+        // workspaces. The remote path's `RemoteSshRuntime` impl
+        // forwards through the JSON-RPC client instead.
+        let env: Vec<(std::ffi::OsString, std::ffi::OsString)> = params
+            .env
+            .iter()
+            .map(|e| (e.name.clone().into(), e.value.clone().into()))
+            .collect();
+        let output = crate::forge::command::forge_run_local(
+            &params.program,
+            params.args.iter().map(|s| s.as_str()),
+            &env,
+            params.timeout_ms,
+        )?;
+        Ok(super::methods::ForgeExecResult {
+            stdout: output.stdout,
+            stderr: output.stderr,
+            exit_code: output.exit_code,
+        })
     }
 
     fn workspace_status(&self, workspace_dir: &Path) -> Result<WorkspaceStatusResult> {

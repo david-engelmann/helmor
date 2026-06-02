@@ -169,6 +169,13 @@ pub enum Method {
     /// Track E2: per-method RPC counters + latency percentiles.
     /// Empty params — the daemon snapshots its registry.
     RuntimeMetrics,
+    /// Spawn one of the bundled forge CLIs (`gh` / `glab`) on the
+    /// runtime's filesystem and return its captured stdout / stderr +
+    /// exit code. Backs the workspace-scoped forge ops on a
+    /// remote-bound workspace so the daemon's `gh`/`glab` (which
+    /// the user authenticated independently of their laptop) does
+    /// the work.
+    ForgeExec,
 }
 
 impl Method {
@@ -209,6 +216,7 @@ impl Method {
             Self::WorkspaceUnbundleFinish => "workspace.unbundleFinish",
             Self::DaemonTailLog => "daemon.tailLog",
             Self::RuntimeMetrics => "runtime.metrics",
+            Self::ForgeExec => "forge.exec",
         }
     }
 }
@@ -267,6 +275,7 @@ impl FromStr for Method {
             "workspace.unbundleFinish" => Ok(Self::WorkspaceUnbundleFinish),
             "daemon.tailLog" => Ok(Self::DaemonTailLog),
             "runtime.metrics" => Ok(Self::RuntimeMetrics),
+            "forge.exec" => Ok(Self::ForgeExec),
             _ => Err(UnknownMethod(value.to_string())),
         }
     }
@@ -712,6 +721,80 @@ pub enum TerminalEventKind {
 pub struct TerminalEventNotification {
     pub terminal_id: String,
     pub event: TerminalEventKind,
+}
+
+// ── forge.exec ────────────────────────────────────────────────────
+//
+// Spawn one of the bundled forge CLIs (`gh` or `glab`) on the
+// runtime's own filesystem, wait for it to exit (bounded by the
+// caller's timeout), and return its captured stdout / stderr + exit
+// code. The desktop's existing `forge::command::run_command` becomes
+// the local impl; the daemon's server-side handler is the same shape
+// but resolves `program` against the *remote* bundled-CLI vendor dir.
+//
+// Why a synchronous one-shot RPC instead of streaming through
+// `terminal.open`: forge CLIs are non-interactive (`gh pr view`,
+// `glab api`), short-lived, and the caller already wants the whole
+// output as a `CommandOutput { stdout, stderr, exit_code }`. The
+// streaming machinery the terminal RPCs need (PTY, scrollback,
+// attach) would just be ceremony.
+//
+// The wire shape mirrors `forge::command::CommandOutput` 1:1 so the
+// existing parsers (`gh ... --json ...`) keep working byte-for-byte
+// whether the call ran on the laptop or on a remote daemon.
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ForgeExecParams {
+    /// Logical program name — `"gh"` or `"glab"`. The server-side
+    /// handler resolves this against the runtime's bundled-CLI
+    /// vendor dir; clients never pass an absolute path so the
+    /// laptop's `gh` and the daemon's `gh` stay decoupled.
+    pub program: String,
+    /// Argument vector exactly as it would be passed to the local
+    /// `Command::new(program).args(args)` form. Quoting / escaping
+    /// is the caller's responsibility.
+    pub args: Vec<String>,
+    /// Extra environment variables to set for the spawned child.
+    /// Empty when the caller doesn't need overrides (most read
+    /// paths). The server-side handler always adds `NO_COLOR=1` on
+    /// top of these for clean JSON parsing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<ForgeExecEnv>,
+    /// Hard wall-clock cap. The server kills + reaps the child if
+    /// it exceeds this. `None` defers to the server's default
+    /// (mirrors `forge::command::DEFAULT_COMMAND_TIMEOUT`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+/// One env-var override for `forge.exec`. Kept as a `Vec` rather
+/// than `HashMap` so the wire order is stable for snapshot tests
+/// and so `serde_json::Map` doesn't lose insertion order if a
+/// caller happens to use a `BTreeMap` snapshot on the other side.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ForgeExecEnv {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ForgeExecResult {
+    pub stdout: String,
+    pub stderr: String,
+    /// `None` when the process was killed by a signal (timeout
+    /// reaper, host shutdown). Mirrors `std::process::ExitStatus::code()`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+}
+
+pub struct ForgeExecMethod;
+impl RpcMethod for ForgeExecMethod {
+    const NAME: &'static str = "forge.exec";
+    type Params = ForgeExecParams;
+    type Result = ForgeExecResult;
 }
 
 // ── workspace.fileTree / .changes / .readFile / .readFileAtRef ────

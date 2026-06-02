@@ -900,6 +900,13 @@ impl RemoteRuntime for RemoteSshRuntime {
             .call::<super::methods::TerminalOpenMethod>(params)
     }
 
+    fn forge_exec(
+        &self,
+        params: super::methods::ForgeExecParams,
+    ) -> Result<super::methods::ForgeExecResult> {
+        self.client.call::<super::methods::ForgeExecMethod>(params)
+    }
+
     fn terminal_write(
         &self,
         params: super::methods::TerminalWriteParams,

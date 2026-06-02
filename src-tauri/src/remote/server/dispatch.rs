@@ -13,8 +13,8 @@ use serde_json::Value;
 
 use crate::remote::methods::{
     AgentAbortMethod, AgentAttachMethod, AgentAuthStatusMethod, AgentListMethod, AgentSendMethod,
-    AgentSetAuthMethod, DaemonTailLogMethod, InitializeMethod, Method, PingMethod, RpcMethod,
-    RuntimeMetricsMethod, TerminalAttachMethod, TerminalCloseMethod, TerminalListMethod,
+    AgentSetAuthMethod, DaemonTailLogMethod, ForgeExecMethod, InitializeMethod, Method, PingMethod,
+    RpcMethod, RuntimeMetricsMethod, TerminalAttachMethod, TerminalCloseMethod, TerminalListMethod,
     TerminalOpenMethod, TerminalResizeMethod, TerminalWriteMethod, WorkspaceBranchInfoMethod,
     WorkspaceBundleBeginMethod, WorkspaceBundleChunkMethod, WorkspaceBundleEndMethod,
     WorkspaceBundleMethod, WorkspaceChangesMethod, WorkspaceFileTreeMethod,
@@ -29,16 +29,16 @@ use crate::remote::protocol::{
 
 use super::handlers::{
     handle_agent_abort, handle_agent_attach, handle_agent_auth_status, handle_agent_list,
-    handle_agent_send, handle_agent_set_auth, handle_daemon_tail_log, handle_initialize,
-    handle_ping, handle_runtime_metrics, handle_terminal_attach, handle_terminal_close,
-    handle_terminal_list, handle_terminal_open, handle_terminal_resize, handle_terminal_write,
-    handle_workspace_branch_info, handle_workspace_bundle, handle_workspace_bundle_begin,
-    handle_workspace_bundle_chunk, handle_workspace_bundle_end, handle_workspace_changes,
-    handle_workspace_file_tree, handle_workspace_mutate_file, handle_workspace_read_file,
-    handle_workspace_read_file_at_ref, handle_workspace_search, handle_workspace_start_watch,
-    handle_workspace_stat_file, handle_workspace_status, handle_workspace_stop_watch,
-    handle_workspace_unbundle, handle_workspace_unbundle_begin, handle_workspace_unbundle_chunk,
-    handle_workspace_unbundle_finish,
+    handle_agent_send, handle_agent_set_auth, handle_daemon_tail_log, handle_forge_exec,
+    handle_initialize, handle_ping, handle_runtime_metrics, handle_terminal_attach,
+    handle_terminal_close, handle_terminal_list, handle_terminal_open, handle_terminal_resize,
+    handle_terminal_write, handle_workspace_branch_info, handle_workspace_bundle,
+    handle_workspace_bundle_begin, handle_workspace_bundle_chunk, handle_workspace_bundle_end,
+    handle_workspace_changes, handle_workspace_file_tree, handle_workspace_mutate_file,
+    handle_workspace_read_file, handle_workspace_read_file_at_ref, handle_workspace_search,
+    handle_workspace_start_watch, handle_workspace_stat_file, handle_workspace_status,
+    handle_workspace_stop_watch, handle_workspace_unbundle, handle_workspace_unbundle_begin,
+    handle_workspace_unbundle_chunk, handle_workspace_unbundle_finish,
 };
 use super::ServerContext;
 
@@ -195,6 +195,9 @@ pub fn dispatch_request(ctx: &ServerContext, req: JsonRpcRequest) -> Option<Json
         Method::RuntimeMetrics => handle::<RuntimeMetricsMethod, _>(req.params, |params| {
             handle_runtime_metrics(ctx, params)
         }),
+        Method::ForgeExec => {
+            handle::<ForgeExecMethod, _>(req.params, |params| handle_forge_exec(ctx, params))
+        }
     };
 
     // Track E2: record after dispatch so the latency captures the
