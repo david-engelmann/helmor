@@ -2371,6 +2371,12 @@ pub async fn open_remote_terminal(
     terminal_id: String,
     workspace_dir: String,
     shell: Option<String>,
+    // `command` is the script-mode escape hatch — when set, the daemon
+    // spawns `<shell> -c "<command>"` so Setup / Run scripts can ride
+    // the same terminal infrastructure on a remote-bound workspace.
+    // `None` preserves the interactive-shell behaviour the Terminal
+    // tab uses.
+    command: Option<String>,
     cols: u16,
     rows: u16,
     channel: Channel<TerminalEventNotification>,
@@ -2403,6 +2409,7 @@ pub async fn open_remote_terminal(
             terminal_id: terminal_id.clone(),
             workspace_dir,
             shell,
+            command,
             cols,
             rows,
         });

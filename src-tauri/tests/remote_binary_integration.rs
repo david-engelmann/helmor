@@ -415,6 +415,7 @@ fn spawned_helmor_server_opens_terminal_streams_stdout_and_closes_cleanly() {
             terminal_id: "t-pty-1".into(),
             workspace_dir: "/tmp".into(),
             shell: Some("/bin/sh".into()),
+            command: None,
             cols: 80,
             rows: 24,
         })
@@ -524,6 +525,7 @@ fn spawned_helmor_server_lists_and_reattaches_to_running_terminal() {
             terminal_id: "t-reattach".into(),
             workspace_dir: "/tmp".into(),
             shell: Some("/bin/sh".into()),
+            command: None,
             cols: 80,
             rows: 24,
         })
@@ -691,6 +693,7 @@ fn daemon_mode_terminal_survives_client_disconnect_and_reattach() {
                 terminal_id: "t-survive".into(),
                 workspace_dir: "/tmp".into(),
                 shell: Some("/bin/sh".into()),
+                command: None,
                 cols: 80,
                 rows: 24,
             })
@@ -813,6 +816,7 @@ fn owned_terminals_persistence_round_trips_with_daemon_list_and_attach() {
                 terminal_id: "t-19c".into(),
                 workspace_dir: "/tmp".into(),
                 shell: Some("/bin/sh".into()),
+                command: None,
                 cols: 80,
                 rows: 24,
             })
