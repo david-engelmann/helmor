@@ -16,7 +16,16 @@ pub fn run_workspace_ship_action(
 
     match action {
         WorkspaceShipActionKind::MergePr => {
-            let info = crate::forge::merge_workspace_change_request(&workspace_id)?;
+            // CLI ship actions stay laptop-only for now — the CLI
+            // binary doesn't see the runtime registry / bindings the
+            // GUI uses to resolve a workspace's remote runner. Follow
+            // up by plumbing those through `service::resolve_workspace_ref`
+            // so a remote-bound workspace's ship action lands on its
+            // runtime's `gh`.
+            let info = crate::forge::merge_workspace_change_request(
+                &workspace_id,
+                crate::forge::command::ForgeRunner::local(),
+            )?;
             Ok(WorkspaceShipActionResult::Direct {
                 action,
                 workspace_id,

@@ -18,6 +18,7 @@
 use anyhow::{bail, Context, Result};
 
 use crate::error::ErrorCode;
+use crate::forge::command::ForgeRunner;
 use crate::forge::ChangeRequestInfo;
 use crate::forge::ForgeActionStatus;
 
@@ -48,8 +49,11 @@ use self::pull_request::{
 ///     or when the bound account no longer has access.
 ///   - `Err(_)` only for unexpected transport / parse failures (so the
 ///     caller can surface a distinct "something went wrong" state).
-pub fn lookup_workspace_pr(workspace_id: &str) -> Result<Option<ChangeRequestInfo>> {
-    let context = match load_github_context(workspace_id, HostAuthCheck::Skip)? {
+pub(crate) fn lookup_workspace_pr(
+    workspace_id: &str,
+    runner: ForgeRunner,
+) -> Result<Option<ChangeRequestInfo>> {
+    let context = match load_github_context(workspace_id, HostAuthCheck::Skip, runner)? {
         GithubResolution::Ready(ctx) if ctx.has_remote_tracking => ctx,
         // Anything else short-circuits to "no PR linked":
         //   - Initializing / unavailable / unauthenticated / no
@@ -69,8 +73,11 @@ pub fn lookup_workspace_pr(workspace_id: &str) -> Result<Option<ChangeRequestInf
 /// the returned status instead of bubbling as command errors. That
 /// keeps the local Git rows usable even when remote status cannot be
 /// queried.
-pub fn lookup_workspace_pr_action_status(workspace_id: &str) -> Result<ForgeActionStatus> {
-    let resolution = load_github_context(workspace_id, HostAuthCheck::Probe)?;
+pub(crate) fn lookup_workspace_pr_action_status(
+    workspace_id: &str,
+    runner: ForgeRunner,
+) -> Result<ForgeActionStatus> {
+    let resolution = load_github_context(workspace_id, HostAuthCheck::Probe, runner)?;
     let context = match resolution {
         GithubResolution::Ready(ctx) => ctx,
         GithubResolution::Initializing => {
@@ -96,8 +103,12 @@ pub fn lookup_workspace_pr_action_status(workspace_id: &str) -> Result<ForgeActi
     Ok(status)
 }
 
-pub fn lookup_workspace_pr_check_insert_text(workspace_id: &str, item_id: &str) -> Result<String> {
-    let resolution = load_github_context(workspace_id, HostAuthCheck::Probe)?;
+pub(crate) fn lookup_workspace_pr_check_insert_text(
+    workspace_id: &str,
+    item_id: &str,
+    runner: ForgeRunner,
+) -> Result<String> {
+    let resolution = load_github_context(workspace_id, HostAuthCheck::Probe, runner)?;
     let context = match resolution {
         GithubResolution::Ready(ctx) if ctx.has_remote_tracking => ctx,
         GithubResolution::Ready(_) | GithubResolution::Initializing => {
@@ -128,7 +139,13 @@ pub fn lookup_workspace_pr_check_insert_text(workspace_id: &str, item_id: &str) 
         .strip_prefix("check-run-")
         .and_then(|value| value.parse::<i64>().ok())
         .map(|check_run_id| {
-            query_check_run_detail(&context.login, &context.owner, &context.name, check_run_id)
+            query_check_run_detail(
+                &context.runner,
+                &context.login,
+                &context.owner,
+                &context.name,
+                check_run_id,
+            )
         })
         .transpose()
         .context("Failed to load check run details")?;
@@ -139,42 +156,48 @@ pub fn lookup_workspace_pr_check_insert_text(workspace_id: &str, item_id: &str) 
 /// Merge a workspace's open PR via the GitHub GraphQL `mergePullRequest`
 /// mutation. Returns the updated `ChangeRequestInfo` on success, or
 /// `None` when the PR can't be found / repo isn't bound.
-pub fn merge_workspace_pr(workspace_id: &str) -> Result<Option<ChangeRequestInfo>> {
-    let pr = lookup_workspace_pr(workspace_id)?;
+pub(crate) fn merge_workspace_pr(
+    workspace_id: &str,
+    runner: ForgeRunner,
+) -> Result<Option<ChangeRequestInfo>> {
+    let pr = lookup_workspace_pr(workspace_id, runner.clone())?;
     let Some(pr) = pr else {
         return Ok(None);
     };
     if pr.state != "OPEN" {
         bail!("PR #{} is not open (state: {})", pr.number, pr.state);
     }
-    let Some(context) = mutation_context(workspace_id)? else {
+    let Some(context) = mutation_context(workspace_id, runner.clone())? else {
         return Ok(None);
     };
     let Some(pr_node_id) = fetch_open_pr_node_id(&context)? else {
         bail!("Could not resolve PR node ID for #{}", pr.number);
     };
     merge_pull_request(&context, &pr_node_id).context("mergePullRequest failed")?;
-    lookup_workspace_pr(workspace_id)
+    lookup_workspace_pr(workspace_id, runner)
 }
 
 /// Close a workspace's open PR via the GitHub GraphQL `closePullRequest`
 /// mutation. Returns the updated `ChangeRequestInfo` on success.
-pub fn close_workspace_pr(workspace_id: &str) -> Result<Option<ChangeRequestInfo>> {
-    let pr = lookup_workspace_pr(workspace_id)?;
+pub(crate) fn close_workspace_pr(
+    workspace_id: &str,
+    runner: ForgeRunner,
+) -> Result<Option<ChangeRequestInfo>> {
+    let pr = lookup_workspace_pr(workspace_id, runner.clone())?;
     let Some(pr) = pr else {
         return Ok(None);
     };
     if pr.state != "OPEN" {
         bail!("PR #{} is not open (state: {})", pr.number, pr.state);
     }
-    let Some(context) = mutation_context(workspace_id)? else {
+    let Some(context) = mutation_context(workspace_id, runner.clone())? else {
         return Ok(None);
     };
     let Some(pr_node_id) = fetch_open_pr_node_id(&context)? else {
         bail!("Could not resolve PR node ID for #{}", pr.number);
     };
-    close_pull_request(&context.login, &pr_node_id).context("closePullRequest failed")?;
-    lookup_workspace_pr(workspace_id)
+    close_pull_request(&context, &pr_node_id).context("closePullRequest failed")?;
+    lookup_workspace_pr(workspace_id, runner)
 }
 
 /// Common up-front work for the merge / close paths. `None` means
@@ -182,8 +205,8 @@ pub fn close_workspace_pr(workspace_id: &str) -> Result<Option<ChangeRequestInfo
 /// Auth probing is intentionally skipped here: the lookup_workspace_pr
 /// call wrapping these has already returned a PR, which means a token
 /// just worked.
-fn mutation_context(workspace_id: &str) -> Result<Option<GithubContext>> {
-    match load_github_context(workspace_id, HostAuthCheck::Skip)? {
+fn mutation_context(workspace_id: &str, runner: ForgeRunner) -> Result<Option<GithubContext>> {
+    match load_github_context(workspace_id, HostAuthCheck::Skip, runner)? {
         GithubResolution::Ready(ctx) if ctx.has_remote_tracking => Ok(Some(ctx)),
         _ => Ok(None),
     }

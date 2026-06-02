@@ -28,7 +28,7 @@ fn pr_dispatch(action: &GithubPrAction, cli: &Cli) -> Result<()> {
 
 fn pr_show(workspace_ref: &str, cli: &Cli) -> Result<()> {
     let id = service::resolve_workspace_ref(workspace_ref)?;
-    let pr = github_pr::lookup_workspace_pr(&id)?;
+    let pr = github_pr::lookup_workspace_pr(&id, crate::forge::command::ForgeRunner::local())?;
     output::print(cli, &pr, |value| match value {
         Some(pr) => format!(
             "#{} {}\nURL:    {}\nState:  {}{}",
@@ -44,13 +44,16 @@ fn pr_show(workspace_ref: &str, cli: &Cli) -> Result<()> {
 
 fn pr_status(workspace_ref: &str, cli: &Cli) -> Result<()> {
     let id = service::resolve_workspace_ref(workspace_ref)?;
-    let status = github_pr::lookup_workspace_pr_action_status(&id)?;
+    let status = github_pr::lookup_workspace_pr_action_status(
+        &id,
+        crate::forge::command::ForgeRunner::local(),
+    )?;
     output::print(cli, &status, |s| format!("{s:?}"))
 }
 
 fn pr_merge(workspace_ref: &str, cli: &Cli) -> Result<()> {
     let id = service::resolve_workspace_ref(workspace_ref)?;
-    let pr = github_pr::merge_workspace_pr(&id)?;
+    let pr = github_pr::merge_workspace_pr(&id, crate::forge::command::ForgeRunner::local())?;
     notify_ui_event(UiMutationEvent::WorkspaceChangeRequestChanged {
         workspace_id: id.clone(),
     });
@@ -62,7 +65,7 @@ fn pr_merge(workspace_ref: &str, cli: &Cli) -> Result<()> {
 
 fn pr_close(workspace_ref: &str, cli: &Cli) -> Result<()> {
     let id = service::resolve_workspace_ref(workspace_ref)?;
-    let pr = github_pr::close_workspace_pr(&id)?;
+    let pr = github_pr::close_workspace_pr(&id, crate::forge::command::ForgeRunner::local())?;
     notify_ui_event(UiMutationEvent::WorkspaceChangeRequestChanged {
         workspace_id: id.clone(),
     });

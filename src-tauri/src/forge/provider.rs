@@ -1,5 +1,6 @@
 use anyhow::{bail, Result};
 
+use crate::forge::command::ForgeRunner;
 use crate::forge::{github, gitlab};
 
 use super::inbox::{
@@ -12,13 +13,37 @@ use super::types::{ChangeRequestInfo, ForgeActionStatus, ForgeProvider};
 /// Capability gaps (e.g. GitLab has no Discussions) are encoded by
 /// omitting the kind from `inbox_kind_labels()`; reaching the
 /// corresponding trait method is a router bug.
+///
+/// `runner` is the binding-aware dispatcher resolved at the workspace
+/// boundary. Workspace-scoped methods accept it so a remote-bound
+/// workspace's `gh`/`glab` calls flow through the daemon's bundled
+/// CLI instead of the laptop's. The account-scoped methods stay
+/// local-only — they read laptop-side auth state, no workspace
+/// context to bind them to.
 pub(crate) trait WorkspaceForgeBackend {
     // Workspace-scoped
-    fn lookup_change_request(&self, workspace_id: &str) -> Result<Option<ChangeRequestInfo>>;
-    fn action_status(&self, workspace_id: &str) -> Result<ForgeActionStatus>;
-    fn check_insert_text(&self, workspace_id: &str, item_id: &str) -> Result<String>;
-    fn merge_change_request(&self, workspace_id: &str) -> Result<Option<ChangeRequestInfo>>;
-    fn close_change_request(&self, workspace_id: &str) -> Result<Option<ChangeRequestInfo>>;
+    fn lookup_change_request(
+        &self,
+        workspace_id: &str,
+        runner: ForgeRunner,
+    ) -> Result<Option<ChangeRequestInfo>>;
+    fn action_status(&self, workspace_id: &str, runner: ForgeRunner) -> Result<ForgeActionStatus>;
+    fn check_insert_text(
+        &self,
+        workspace_id: &str,
+        item_id: &str,
+        runner: ForgeRunner,
+    ) -> Result<String>;
+    fn merge_change_request(
+        &self,
+        workspace_id: &str,
+        runner: ForgeRunner,
+    ) -> Result<Option<ChangeRequestInfo>>;
+    fn close_change_request(
+        &self,
+        workspace_id: &str,
+        runner: ForgeRunner,
+    ) -> Result<Option<ChangeRequestInfo>>;
 
     // Account-scoped (inbox / Add-Context)
 
@@ -84,24 +109,41 @@ struct GithubBackend;
 struct GitlabBackend;
 
 impl WorkspaceForgeBackend for GithubBackend {
-    fn lookup_change_request(&self, workspace_id: &str) -> Result<Option<ChangeRequestInfo>> {
-        github::lookup_workspace_pr(workspace_id)
+    fn lookup_change_request(
+        &self,
+        workspace_id: &str,
+        runner: ForgeRunner,
+    ) -> Result<Option<ChangeRequestInfo>> {
+        github::lookup_workspace_pr(workspace_id, runner)
     }
 
-    fn action_status(&self, workspace_id: &str) -> Result<ForgeActionStatus> {
-        github::lookup_workspace_pr_action_status(workspace_id)
+    fn action_status(&self, workspace_id: &str, runner: ForgeRunner) -> Result<ForgeActionStatus> {
+        github::lookup_workspace_pr_action_status(workspace_id, runner)
     }
 
-    fn check_insert_text(&self, workspace_id: &str, item_id: &str) -> Result<String> {
-        github::lookup_workspace_pr_check_insert_text(workspace_id, item_id)
+    fn check_insert_text(
+        &self,
+        workspace_id: &str,
+        item_id: &str,
+        runner: ForgeRunner,
+    ) -> Result<String> {
+        github::lookup_workspace_pr_check_insert_text(workspace_id, item_id, runner)
     }
 
-    fn merge_change_request(&self, workspace_id: &str) -> Result<Option<ChangeRequestInfo>> {
-        github::merge_workspace_pr(workspace_id)
+    fn merge_change_request(
+        &self,
+        workspace_id: &str,
+        runner: ForgeRunner,
+    ) -> Result<Option<ChangeRequestInfo>> {
+        github::merge_workspace_pr(workspace_id, runner)
     }
 
-    fn close_change_request(&self, workspace_id: &str) -> Result<Option<ChangeRequestInfo>> {
-        github::close_workspace_pr(workspace_id)
+    fn close_change_request(
+        &self,
+        workspace_id: &str,
+        runner: ForgeRunner,
+    ) -> Result<Option<ChangeRequestInfo>> {
+        github::close_workspace_pr(workspace_id, runner)
     }
 
     fn inbox_kind_labels(&self) -> Vec<InboxKindLabels> {
@@ -204,23 +246,44 @@ impl WorkspaceForgeBackend for GithubBackend {
 }
 
 impl WorkspaceForgeBackend for GitlabBackend {
-    fn lookup_change_request(&self, workspace_id: &str) -> Result<Option<ChangeRequestInfo>> {
+    fn lookup_change_request(
+        &self,
+        workspace_id: &str,
+        _runner: ForgeRunner,
+    ) -> Result<Option<ChangeRequestInfo>> {
+        // GitLab routing remains laptop-only for now — the GitLab
+        // module's `glab` shell-outs still bypass the `ForgeRunner`
+        // seam. Follow-up PR will route them through `forge.exec`
+        // alongside the GitHub backend.
         gitlab::lookup_workspace_mr(workspace_id)
     }
 
-    fn action_status(&self, workspace_id: &str) -> Result<ForgeActionStatus> {
+    fn action_status(&self, workspace_id: &str, _runner: ForgeRunner) -> Result<ForgeActionStatus> {
         gitlab::lookup_workspace_mr_action_status(workspace_id)
     }
 
-    fn check_insert_text(&self, workspace_id: &str, item_id: &str) -> Result<String> {
+    fn check_insert_text(
+        &self,
+        workspace_id: &str,
+        item_id: &str,
+        _runner: ForgeRunner,
+    ) -> Result<String> {
         gitlab::lookup_workspace_mr_check_insert_text(workspace_id, item_id)
     }
 
-    fn merge_change_request(&self, workspace_id: &str) -> Result<Option<ChangeRequestInfo>> {
+    fn merge_change_request(
+        &self,
+        workspace_id: &str,
+        _runner: ForgeRunner,
+    ) -> Result<Option<ChangeRequestInfo>> {
         gitlab::merge_workspace_mr(workspace_id)
     }
 
-    fn close_change_request(&self, workspace_id: &str) -> Result<Option<ChangeRequestInfo>> {
+    fn close_change_request(
+        &self,
+        workspace_id: &str,
+        _runner: ForgeRunner,
+    ) -> Result<Option<ChangeRequestInfo>> {
         gitlab::close_workspace_mr(workspace_id)
     }
 

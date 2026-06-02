@@ -95,6 +95,7 @@ pub(super) fn query_workspace_pr_action_status(
     context: &GithubContext,
 ) -> Result<ForgeActionStatus> {
     let parsed: ActionGraphqlEnvelope = match run_graphql(
+        &context.runner,
         &context.login,
         ACTION_STATUS_QUERY,
         &[
@@ -165,6 +166,7 @@ fn pick_workspace_action_pr(
 /// REST-side companion: fetch the human-readable detail blob for a
 /// single check run (used by the inspector "insert log" button).
 pub(super) fn query_check_run_detail(
+    runner: &crate::forge::command::ForgeRunner,
     login: &str,
     owner: &str,
     name: &str,
@@ -179,7 +181,7 @@ pub(super) fn query_check_run_detail(
         "Accept: application/vnd.github+json",
         path.as_str(),
     ];
-    let output = gh_accounts::run_cli_with_login(GITHUB_HOST, login, &args)
+    let output = gh_accounts::run_cli_with_login_via_runner(runner, GITHUB_HOST, login, &args)
         .with_context(|| format!("Failed to spawn `gh api {path}`"))?;
     if !output.success {
         return Err(anyhow!(
