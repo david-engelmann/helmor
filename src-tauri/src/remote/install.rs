@@ -51,6 +51,16 @@ pub const REMOTE_INSTALL_DIR: &str = "$HOME/.helmor/server";
 /// `remote_binary` argument when auto-install fires.
 pub const REMOTE_INSTALL_BINARY: &str = "$HOME/.helmor/server/helmor-server";
 
+/// The helmor-server binary version the desktop expects on the
+/// remote. Compiled in from this crate's own `Cargo.toml` (the
+/// desktop, daemon, and CLI all share one version). The install
+/// gate treats any remote daemon older than this as drift and
+/// triggers a reinstall — that's what propagates *behavior* fixes
+/// (e.g. PR #28's `result`-vs-`end` event handling) which don't
+/// touch [`super::PROTOCOL_VERSION`] but still require a fresher
+/// binary on the wire.
+pub const EXPECTED_BINARY_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// SSH args that mirror [`crate::remote::client`]'s defaults so probes
 /// share the same auth surface as the real connect path. `BatchMode=yes`
 /// matters here too — a prompt would hang the install with no UI to
@@ -111,7 +121,13 @@ pub fn ensure_remote_helmor_server_with_strategy<R: SshRunner>(
     // bury it behind a scp call. But a *missing* binary should NOT
     // bubble up — it's the trigger for install.
     match probe_remote_version(runner, host, requested) {
-        ProbeOutcome::Found(version) if version_matches_protocol(&version, expected_protocol) => {
+        ProbeOutcome::Found(version)
+            if version_matches_expectations(
+                &version,
+                expected_protocol,
+                EXPECTED_BINARY_VERSION,
+            ) =>
+        {
             tracing::info!(
                 host = %host,
                 binary = %requested,
@@ -125,9 +141,11 @@ pub fn ensure_remote_helmor_server_with_strategy<R: SshRunner>(
             tracing::info!(
                 host = %host,
                 binary = %requested,
+                installed_binary = %version.binary_version,
                 installed_protocol = ?version.protocol_version,
+                expected_binary = %EXPECTED_BINARY_VERSION,
                 expected_protocol = %expected_protocol,
-                "remote-runner: requested binary's protocol doesn't match; re-installing"
+                "remote-runner: requested binary is stale (protocol or version drift); re-installing"
             );
             // Fall through to managed-location probe + install.
         }
@@ -139,13 +157,18 @@ pub fn ensure_remote_helmor_server_with_strategy<R: SshRunner>(
         }
     }
 
-    // Step 2: maybe the managed location already has it AND its
-    // protocol matches. A version-mismatched managed binary forces
-    // a re-install (the install path overwrites cleanly).
+    // Step 2: maybe the managed location already has it AND it
+    // passes both the protocol gate and the binary-version gate. A
+    // version-mismatched managed binary forces a re-install (the
+    // install path overwrites cleanly).
     if requested != REMOTE_INSTALL_BINARY {
         match probe_remote_version(runner, host, REMOTE_INSTALL_BINARY) {
             ProbeOutcome::Found(version)
-                if version_matches_protocol(&version, expected_protocol) =>
+                if version_matches_expectations(
+                    &version,
+                    expected_protocol,
+                    EXPECTED_BINARY_VERSION,
+                ) =>
             {
                 tracing::info!(
                     host = %host,
@@ -159,9 +182,11 @@ pub fn ensure_remote_helmor_server_with_strategy<R: SshRunner>(
                 tracing::info!(
                     host = %host,
                     binary = %REMOTE_INSTALL_BINARY,
+                    installed_binary = %version.binary_version,
                     installed_protocol = ?version.protocol_version,
+                    expected_binary = %EXPECTED_BINARY_VERSION,
                     expected_protocol = %expected_protocol,
-                    "remote-runner: managed binary's protocol stale; re-installing"
+                    "remote-runner: managed binary is stale; re-installing"
                 );
             }
             ProbeOutcome::Missing => {}
@@ -177,9 +202,15 @@ pub fn ensure_remote_helmor_server_with_strategy<R: SshRunner>(
         .with_context(|| format!("auto-install of helmor-server on `{host}` failed"))?;
 
     // Sanity-check the install actually landed runnable + at the
-    // protocol version we expected.
+    // protocol version + binary version we expected.
     match probe_remote_version(runner, host, REMOTE_INSTALL_BINARY) {
-        ProbeOutcome::Found(version) if version_matches_protocol(&version, expected_protocol) => {
+        ProbeOutcome::Found(version)
+            if version_matches_expectations(
+                &version,
+                expected_protocol,
+                EXPECTED_BINARY_VERSION,
+            ) =>
+        {
             tracing::info!(
                 host = %host,
                 binary = %REMOTE_INSTALL_BINARY,
@@ -190,9 +221,12 @@ pub fn ensure_remote_helmor_server_with_strategy<R: SshRunner>(
         }
         ProbeOutcome::Found(version) => {
             bail!(
-                "auto-install completed but the installed binary's protocol \
-                 ({:?}) doesn't match the desktop's expected protocol ({})",
+                "auto-install completed but the installed binary's version ({}) \
+                 or protocol ({:?}) doesn't match desktop expectations (binary {}, \
+                 protocol {})",
+                version.binary_version,
                 version.protocol_version,
+                EXPECTED_BINARY_VERSION,
                 expected_protocol,
             )
         }
@@ -225,9 +259,16 @@ pub fn force_reinstall_remote_helmor_server<R: SshRunner>(
     install_remote(runner, host, local_binary, expected_protocol, strategy)
         .with_context(|| format!("force re-install of helmor-server on `{host}` failed"))?;
     // Same post-install verify as `ensure_remote_helmor_server` —
-    // confirm the new binary runs + reports the expected protocol.
+    // confirm the new binary runs + reports the expected protocol +
+    // binary version.
     match probe_remote_version(runner, host, REMOTE_INSTALL_BINARY) {
-        ProbeOutcome::Found(version) if version_matches_protocol(&version, expected_protocol) => {
+        ProbeOutcome::Found(version)
+            if version_matches_expectations(
+                &version,
+                expected_protocol,
+                EXPECTED_BINARY_VERSION,
+            ) =>
+        {
             tracing::info!(
                 host = %host,
                 binary = %REMOTE_INSTALL_BINARY,
@@ -238,9 +279,12 @@ pub fn force_reinstall_remote_helmor_server<R: SshRunner>(
         }
         ProbeOutcome::Found(version) => {
             bail!(
-                "force re-install completed but the new binary's protocol \
-                 ({:?}) doesn't match the desktop's expected protocol ({})",
+                "force re-install completed but the new binary's version ({}) \
+                 or protocol ({:?}) doesn't match desktop expectations (binary {}, \
+                 protocol {})",
+                version.binary_version,
                 version.protocol_version,
+                EXPECTED_BINARY_VERSION,
                 expected_protocol,
             )
         }
@@ -293,11 +337,56 @@ pub fn daemon_version_is_older(daemon_version: &str, desktop_version: &str) -> b
     }
 }
 
-fn version_matches_protocol(probed: &ProbedVersion, expected: &str) -> bool {
+/// True when the probed daemon passes BOTH the protocol-version gate
+/// and the binary-version gate. Either failing flips the caller into
+/// the "reinstall" branch.
+///
+/// - **Protocol** — exact equality with `expected_protocol`. The
+///   protocol bumps signal wire-format breaking changes; a
+///   mismatch *must* trigger reinstall.
+/// - **Binary** — "no older than" against `expected_binary`. Equal or
+///   newer is fine (a daemon someone deployed by hand ahead of the
+///   desktop isn't drift the desktop should flatten). Older than the
+///   desktop, or an unparseable version line, fires reinstall. This
+///   is what catches behavior-only fixes that don't bump the
+///   protocol (PR #28 was the motivating case).
+fn version_matches_expectations(
+    probed: &ProbedVersion,
+    expected_protocol: &str,
+    expected_binary: &str,
+) -> bool {
+    protocol_matches(probed, expected_protocol) && !binary_is_older_than(probed, expected_binary)
+}
+
+fn protocol_matches(probed: &ProbedVersion, expected: &str) -> bool {
     probed
         .protocol_version
         .as_deref()
         .is_some_and(|installed| installed == expected)
+}
+
+/// True when the probed binary's reported semver is strictly older
+/// than `expected`, OR when the version line is unparseable. The
+/// unparseable case errs on the side of reinstalling — a daemon
+/// that can't report its version coherently shouldn't be trusted to
+/// be current.
+fn binary_is_older_than(probed: &ProbedVersion, expected: &str) -> bool {
+    match binary_semver(probed) {
+        Some(installed) => daemon_version_is_older(installed, expected),
+        None => true,
+    }
+}
+
+/// Extract the bare semver from the `helmor-server <semver>` line
+/// that the daemon's `--version` output prints. Returns `None` if
+/// the line is missing the expected prefix (legacy binaries, or
+/// drift in the output format) so callers know to reinstall.
+fn binary_semver(probed: &ProbedVersion) -> Option<&str> {
+    probed
+        .binary_version
+        .strip_prefix("helmor-server ")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
 }
 
 /// Result of a `--version` probe. Distinguishes "binary not on the
@@ -910,12 +999,16 @@ mod tests {
 
     // ── ensure: existing binary at requested path ────────────────
 
-    /// Shorthand for probe stdout that matches the current
-    /// `PROTOCOL_VERSION` — keeps tests stable when the constant moves.
+    /// Shorthand for probe stdout that satisfies *both* gates — the
+    /// crate's compiled-in protocol and the crate's compiled-in
+    /// binary version. Tests that want to drive the drift branches
+    /// build their own probe string with a stale version on one of
+    /// the lines.
     fn matching_probe() -> String {
         format!(
-            "helmor-server 0.22.1\nprotocol {}\n",
-            super::super::PROTOCOL_VERSION
+            "helmor-server {}\nprotocol {}\n",
+            EXPECTED_BINARY_VERSION,
+            super::super::PROTOCOL_VERSION,
         )
     }
 
@@ -934,6 +1027,129 @@ mod tests {
         // Exactly one ssh call, no scp.
         assert_eq!(runner.ssh_calls.lock().unwrap().len(), 1);
         assert!(runner.scp_calls.lock().unwrap().is_empty());
+    }
+
+    // ── version gate: protocol + binary-version expectations ──────
+
+    #[test]
+    fn version_matches_expectations_accepts_equal_versions() {
+        let probed = ProbedVersion {
+            binary_version: format!("helmor-server {EXPECTED_BINARY_VERSION}"),
+            protocol_version: Some(super::super::PROTOCOL_VERSION.to_string()),
+        };
+        assert!(version_matches_expectations(
+            &probed,
+            super::super::PROTOCOL_VERSION,
+            EXPECTED_BINARY_VERSION,
+        ));
+    }
+
+    #[test]
+    fn version_matches_expectations_accepts_a_newer_remote_binary() {
+        // A daemon someone pushed ahead of the desktop isn't drift
+        // the desktop should overwrite. (Equal would also accept.)
+        let probed = ProbedVersion {
+            binary_version: "helmor-server 99.99.99".into(),
+            protocol_version: Some(super::super::PROTOCOL_VERSION.to_string()),
+        };
+        assert!(version_matches_expectations(
+            &probed,
+            super::super::PROTOCOL_VERSION,
+            EXPECTED_BINARY_VERSION,
+        ));
+    }
+
+    #[test]
+    fn version_matches_expectations_rejects_an_older_remote_binary() {
+        // The motivating case: PR #28 (behavior-only fix) means a
+        // remote at any earlier version is missing the fix, even
+        // though the protocol still matches.
+        let probed = ProbedVersion {
+            binary_version: "helmor-server 0.0.1".into(),
+            protocol_version: Some(super::super::PROTOCOL_VERSION.to_string()),
+        };
+        assert!(!version_matches_expectations(
+            &probed,
+            super::super::PROTOCOL_VERSION,
+            EXPECTED_BINARY_VERSION,
+        ));
+    }
+
+    #[test]
+    fn version_matches_expectations_rejects_protocol_mismatch_even_when_binary_matches() {
+        let probed = ProbedVersion {
+            binary_version: format!("helmor-server {EXPECTED_BINARY_VERSION}"),
+            protocol_version: Some("99.0.0".into()),
+        };
+        assert!(!version_matches_expectations(
+            &probed,
+            super::super::PROTOCOL_VERSION,
+            EXPECTED_BINARY_VERSION,
+        ));
+    }
+
+    #[test]
+    fn version_matches_expectations_rejects_unparseable_binary_line() {
+        // Legacy binary that doesn't print the "helmor-server
+        // <semver>" line — can't trust → reinstall.
+        let probed = ProbedVersion {
+            binary_version: "garbage".into(),
+            protocol_version: Some(super::super::PROTOCOL_VERSION.to_string()),
+        };
+        assert!(!version_matches_expectations(
+            &probed,
+            super::super::PROTOCOL_VERSION,
+            EXPECTED_BINARY_VERSION,
+        ));
+    }
+
+    /// End-to-end check that an older binary at the requested path
+    /// flows through to the install branch. This is the bug PR #28
+    /// surfaced — the manual cross-build + docker cp dance happened
+    /// because a protocol-match-only gate kept the stale binary.
+    #[test]
+    fn ensure_reinstalls_when_requested_binary_is_older_than_desktop() {
+        let runner = RecordingRunner::default();
+        // 1. Probe requested → found, protocol matches, but binary
+        //    version is older than the desktop's. Gate falls
+        //    through to the managed-path probe + install.
+        runner.queue_ssh(ok_output(&format!(
+            "helmor-server 0.0.1\nprotocol {}\n",
+            super::super::PROTOCOL_VERSION,
+        )));
+        // 2. Probe managed path → same older binary.
+        runner.queue_ssh(ok_output(&format!(
+            "helmor-server 0.0.1\nprotocol {}\n",
+            super::super::PROTOCOL_VERSION,
+        )));
+        // 3. mkdir + scp + chmod, then 4. post-install probe at
+        //    matching version.
+        runner.queue_ssh(ok_output("")); // mkdir
+        runner.queue_scp(ok_output("")); // scp
+        runner.queue_ssh(ok_output("")); // chmod
+        runner.queue_ssh(ok_output(&matching_probe())); // post-install probe
+
+        let resolved = ensure_remote_helmor_server_with_strategy(
+            &runner,
+            "dev.box",
+            "helmor-server",
+            Path::new("/local/helmor-server"),
+            InstallStrategy::Scp,
+        )
+        .unwrap();
+        assert_eq!(resolved, REMOTE_INSTALL_BINARY);
+
+        let ssh_calls = runner.ssh_calls.lock().unwrap();
+        assert_eq!(
+            ssh_calls.len(),
+            5,
+            "expected probe(requested), probe(managed), mkdir, chmod, post-install probe; got {ssh_calls:?}",
+        );
+        assert_eq!(
+            runner.scp_calls.lock().unwrap().len(),
+            1,
+            "older binary should have triggered the scp install",
+        );
     }
 
     // ── ensure: managed-path fallback discovers prior install ────
