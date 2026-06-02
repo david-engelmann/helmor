@@ -326,9 +326,9 @@ export function WorkspaceInspectorSidebar({
 
 	const handleAddTerminal = useCallback(() => {
 		if (!repoId || !workspaceId) return;
-		const next = createTerminal(repoId, workspaceId);
+		const next = createTerminal(repoId, workspaceId, workspaceRootPath ?? null);
 		if (next) setActiveTab(next.id);
-	}, [repoId, workspaceId, setActiveTab]);
+	}, [repoId, workspaceId, workspaceRootPath, setActiveTab]);
 
 	const handleToggleTerminalHoverZoom = useCallback(
 		(instanceId: string, disabled: boolean) => {
