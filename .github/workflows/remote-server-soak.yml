@@ -19,16 +19,6 @@ name: Remote server soak
 
 on:
   workflow_dispatch:
-    inputs:
-      arch:
-        description: "Which leg to soak (amd64 or arm64; default: both)"
-        required: false
-        default: "both"
-        type: choice
-        options:
-          - both
-          - amd64
-          - arm64
 
 concurrency:
   group: remote-server-soak-${{ github.ref }}
@@ -44,9 +34,6 @@ env:
 jobs:
   soak:
     name: Soak (${{ matrix.arch }})
-    if: |
-      github.event.inputs.arch == 'both' ||
-      github.event.inputs.arch == matrix.arch
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
