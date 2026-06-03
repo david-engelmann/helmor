@@ -816,6 +816,111 @@ describe("WorkspaceComposerContainer", () => {
 		expect(composer).toHaveAttribute("data-submit-disabled", "false");
 	});
 
+	// Phase 1.3 scenario A: when the workspace is bound to a remote
+	// runtime that's currently degraded / disconnected, hitting Send
+	// would race against the dropped SSH socket and the user's message
+	// could fail to materialize. Disable Send the moment the runtime
+	// drops; the connection banner surfaces the actual recovery action.
+	const renderContainerWithRuntime = (
+		runtimeName: string | null,
+		runtimeState:
+			| { type: "connected" }
+			| { type: "degraded"; reason: string }
+			| { type: "disconnected"; reason: string }
+			| null,
+	) => {
+		const queryClient = createHelmorQueryClient();
+		queryClient.setQueryData(
+			helmorQueryKeys.agentModelSections,
+			MODEL_SECTIONS,
+		);
+		queryClient.setQueryData(helmorQueryKeys.workspaceDetail("workspace-1"), {
+			...WORKSPACE_DETAIL,
+			runtimeName,
+		});
+		queryClient.setQueryData(
+			helmorQueryKeys.workspaceSessions("workspace-1"),
+			WORKSPACE_SESSIONS,
+		);
+		if (runtimeState && runtimeName) {
+			queryClient.setQueryData(
+				["remote-runtimes"],
+				[
+					{
+						name: runtimeName,
+						isLocal: false,
+						state: runtimeState,
+					},
+				],
+			);
+		}
+		render(
+			<QueryClientProvider client={queryClient}>
+				<WorkspaceComposerContainer
+					displayedWorkspaceId="workspace-1"
+					displayedSessionId="session-1"
+					disabled={false}
+					sending={false}
+					sendError={null}
+					restoreDraft={null}
+					restoreImages={[]}
+					restoreFiles={[]}
+					restoreNonce={0}
+					modelSelections={{}}
+					effortLevels={{}}
+					permissionModes={{}}
+					fastModes={{}}
+					onSelectModel={vi.fn()}
+					onSelectEffort={vi.fn()}
+					onChangePermissionMode={vi.fn()}
+					onChangeFastMode={vi.fn()}
+					onSubmit={vi.fn()}
+				/>
+			</QueryClientProvider>,
+		);
+	};
+
+	it("blocks Send when the workspace's bound remote runtime is degraded", () => {
+		renderContainerWithRuntime("docker-test", {
+			type: "degraded",
+			reason: "ping timed out",
+		});
+		const composer = screen.getByTestId("workspace-composer-mock");
+		expect(composer).toHaveAttribute("data-submit-disabled", "true");
+		// The editor + toolbar stay live so the user can draft / tweak
+		// settings while waiting for the reconnect to succeed.
+		expect(composer).toHaveAttribute("data-disabled", "false");
+	});
+
+	it("blocks Send when the workspace's bound remote runtime is disconnected", () => {
+		renderContainerWithRuntime("docker-test", {
+			type: "disconnected",
+			reason: "ssh: connection refused",
+		});
+		const composer = screen.getByTestId("workspace-composer-mock");
+		expect(composer).toHaveAttribute("data-submit-disabled", "true");
+	});
+
+	it("keeps Send live when the bound runtime is connected", () => {
+		renderContainerWithRuntime("docker-test", { type: "connected" });
+		const composer = screen.getByTestId("workspace-composer-mock");
+		expect(composer).toHaveAttribute("data-submit-disabled", "false");
+	});
+
+	it("keeps Send live for local-bound workspaces", () => {
+		// The literal "local" name + null are both treated as the
+		// local runtime — never goes degraded.
+		renderContainerWithRuntime("local", null);
+		const composer = screen.getByTestId("workspace-composer-mock");
+		expect(composer).toHaveAttribute("data-submit-disabled", "false");
+	});
+
+	it("keeps Send live for workspaces with no runtime binding", () => {
+		renderContainerWithRuntime(null, null);
+		const composer = screen.getByTestId("workspace-composer-mock");
+		expect(composer).toHaveAttribute("data-submit-disabled", "false");
+	});
+
 	it("renders queued follow-ups as an overlay above the composer", () => {
 		const queryClient = createHelmorQueryClient();
 		queryClient.setQueryData(

@@ -22,6 +22,7 @@ import type {
 } from "@/lib/api";
 import {
 	createSession,
+	listRemoteRuntimes,
 	mutateCodexGoal,
 	saveAutoCloseActionKinds,
 	setWorkspaceLinkedDirectories,
@@ -304,6 +305,17 @@ export const WorkspaceComposerContainer = memo(
 			...workspaceDetailQueryOptions(displayedWorkspaceId ?? "__none__"),
 			enabled: Boolean(displayedWorkspaceId),
 		});
+		// Shared query key with `RemoteConnectionBanner` and the App's
+		// runtime picker — TanStack dedupes so we don't fire a third
+		// network call. The fast refetch interval matches the banner's;
+		// when the runtime drops we want Send disabled and the banner
+		// visible at the same tick.
+		const remoteRuntimesQuery = useQuery({
+			queryKey: ["remote-runtimes"],
+			queryFn: listRemoteRuntimes,
+			refetchInterval: 10_000,
+			staleTime: 5_000,
+		});
 		const sessionsQuery = useQuery({
 			...workspaceSessionsQueryOptions(displayedWorkspaceId ?? "__none__"),
 			enabled: Boolean(displayedWorkspaceId),
@@ -545,6 +557,28 @@ export const WorkspaceComposerContainer = memo(
 				workspaceDetailQuery.data?.state === "archived");
 		const composerAwaitingFinalize =
 			workspaceDetailQuery.data?.state === "initializing";
+
+		// Block Send when the workspace's bound remote runtime is
+		// degraded / disconnected. The desktop's connection banner is
+		// already up at that point — letting the user hit Send anyway
+		// would race against the SSH socket and the user's message
+		// can fail to materialize entirely (the stream loop bails
+		// before the optimistic insert). Phase 1.3 walkthrough,
+		// scenario A. `null` / "local" runtime bindings stay live —
+		// the local PTY never goes degraded.
+		const boundRuntimeName = workspaceDetailQuery.data?.runtimeName ?? null;
+		const runtimeDegraded = useMemo(() => {
+			if (!boundRuntimeName || boundRuntimeName === "local") return false;
+			const entry = remoteRuntimesQuery.data?.find(
+				(r) => r.name === boundRuntimeName,
+			);
+			// Unknown runtime name (binding to a runtime that's not
+			// currently registered) — could be a stale binding or the
+			// runtimes list not loaded yet. Don't block on speculation;
+			// the banner surfaces the real issue separately.
+			if (!entry) return false;
+			return entry.state.type !== "connected";
+		}, [boundRuntimeName, remoteRuntimesQuery.data]);
 
 		// Auto-close opt-in state comes from settings: `auto_close_action_kinds`
 		// is the persistent list of action kinds the user has enabled. A given
@@ -1099,7 +1133,10 @@ export const WorkspaceComposerContainer = memo(
 						onSubmit={handleComposerSubmit}
 						disabled={composerUnavailable}
 						submitDisabled={
-							disabled || loadingConversationContext || composerAwaitingFinalize
+							disabled ||
+							loadingConversationContext ||
+							composerAwaitingFinalize ||
+							runtimeDegraded
 						}
 						onStop={onStop}
 						sending={sending}
