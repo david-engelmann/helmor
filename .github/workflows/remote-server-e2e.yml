@@ -69,8 +69,29 @@ jobs:
           docker compose -f src-tauri/tests/docker-e2e/compose.yml \
             build ${{ matrix.service }}
 
+      - name: Read pinned Rust channel from rust-toolchain.toml
+        # `dtolnay/rust-toolchain@master` is supposed to auto-detect
+        # `rust-toolchain.toml` when `toolchain:` is unset, but the
+        # auto-detect didn't fire in practice (the `toolchain` input
+        # came through as empty and `rustup` exploded with
+        # `invalid toolchain name ''`). Read the channel ourselves and
+        # pass it explicitly — keeps the CI compiler in lock-step with
+        # local dev without depending on the action's heuristic.
+        id: rust_channel
+        shell: bash
+        run: |
+          channel=$(awk -F '"' '/^channel/{print $2}' rust-toolchain.toml)
+          if [ -z "$channel" ]; then
+            echo "ERROR: failed to parse channel from rust-toolchain.toml" >&2
+            cat rust-toolchain.toml >&2
+            exit 1
+          fi
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # master 2026-02
+        with:
+          toolchain: ${{ steps.rust_channel.outputs.channel }}
 
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.0

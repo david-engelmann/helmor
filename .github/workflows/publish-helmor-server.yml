@@ -96,15 +96,27 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "Building helmor-server ${version} for ${{ matrix.target }}"
 
+      - name: Read pinned Rust channel from rust-toolchain.toml
+        # Pin local dev, the test workflow, and this release pipeline
+        # to the same compiler. Auto-detect via the action's heuristic
+        # didn't fire reliably on `@master` — pass the channel through
+        # explicitly so a `rust-toolchain.toml` bump is the single
+        # source of truth.
+        id: rust_channel
+        shell: bash
+        run: |
+          channel=$(awk -F '"' '/^channel/{print $2}' rust-toolchain.toml)
+          if [ -z "$channel" ]; then
+            echo "ERROR: failed to parse channel from rust-toolchain.toml" >&2
+            cat rust-toolchain.toml >&2
+            exit 1
+          fi
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
-        # Reads the channel from `rust-toolchain.toml` at the repo
-        # root so local dev, the test workflow, and this release
-        # pipeline all build against the same compiler — no silent
-        # drift when GitHub's `@stable` advances between release
-        # cuts. (dtolnay/rust-toolchain auto-detects the file when
-        # `toolchain` is unset.)
         uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # master 2026-02
         with:
+          toolchain: ${{ steps.rust_channel.outputs.channel }}
           targets: ${{ matrix.target }}
 
       - name: Cache cargo registry + target
