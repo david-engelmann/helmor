@@ -81,7 +81,10 @@ describe("MemoConversationMessage plan review", () => {
 			/>,
 		);
 
-		// Tool calls default to collapsed; expand before asserting on the body.
+		// apply_patch with no `result` set has nothing to auto-expand
+		// (the auto-open heuristic only fires for short result text), so
+		// the file rows live inside a collapsed <details>. Expand before
+		// asserting on them.
 		const details = container.querySelector(
 			"details",
 		) as HTMLDetailsElement | null;
@@ -95,6 +98,63 @@ describe("MemoConversationMessage plan review", () => {
 		expect(
 			screen.getByText("actions.tsx").closest("[data-variant='row']"),
 		).toBeInTheDocument();
+	});
+
+	it("auto-expands a short tool result so its output is visible without an extra click", () => {
+		const { container } = render(
+			<AssistantToolCall
+				toolName="Bash"
+				args={{ command: "ls -1" }}
+				result={"LICENSE\nREADME.md\nREMOTE_ONLY_MARKER.txt\ndocs\nscenarios\n"}
+			/>,
+		);
+		const details = container.querySelector(
+			"details",
+		) as HTMLDetailsElement | null;
+		expect(details).not.toBeNull();
+		expect(details!.open).toBe(true);
+		expect(screen.getByText(/REMOTE_ONLY_MARKER\.txt/)).toBeInTheDocument();
+	});
+
+	it("keeps a long tool result collapsed so it doesn't blow up the thread", () => {
+		const longResult = Array.from({ length: 60 }, (_, i) => `line ${i}`).join(
+			"\n",
+		);
+		const { container } = render(
+			<AssistantToolCall
+				toolName="Bash"
+				args={{ command: "find ." }}
+				result={longResult}
+			/>,
+		);
+		const details = container.querySelector(
+			"details",
+		) as HTMLDetailsElement | null;
+		expect(details).not.toBeNull();
+		expect(details!.open).toBe(false);
+		// The body is gated on `isOpen` — it isn't in the DOM until the
+		// user expands the <details>.
+		expect(screen.queryByText(/line 30/)).not.toBeInTheDocument();
+	});
+
+	it("respects the user's manual collapse even when the result is short", () => {
+		const { container } = render(
+			<AssistantToolCall
+				toolName="Bash"
+				args={{ command: "ls" }}
+				result={"a\nb\nc\nd\ne\n"}
+			/>,
+		);
+		const details = container.querySelector(
+			"details",
+		) as HTMLDetailsElement | null;
+		expect(details).not.toBeNull();
+		expect(details!.open).toBe(true);
+		act(() => {
+			details!.open = false;
+			fireEvent(details!, new Event("toggle"));
+		});
+		expect(details!.open).toBe(false);
 	});
 
 	it("serializes assistant text parts without reasoning or tool output", () => {

@@ -120,8 +120,18 @@ export const AssistantToolCall = memo(function AssistantToolCall({
 	const hasOutput = resultText != null && resultText.length > 5;
 	const canExpand = hasOutput || hasFiles;
 	const isLiveTool = isLiveStreamingStatus(streamingStatus);
-	// All tool calls default to collapsed; user must click to expand.
-	const [isOpen, setIsOpen] = useState(false);
+	// Short tool results auto-expand so the agent's output is visible
+	// without an extra click — the most common reason this view exists.
+	// Long results stay collapsed so a 500-line file read doesn't blow
+	// up the thread; the chevron still lets the user open them. Once
+	// the user toggles manually, their choice sticks (`userOverride`
+	// wins over `autoOpen`).
+	const autoOpen = useMemo(() => {
+		if (!hasOutput || resultText == null) return false;
+		return resultText.length <= 1500 && resultText.split("\n").length <= 40;
+	}, [hasOutput, resultText]);
+	const [userOverride, setUserOverride] = useState<boolean | null>(null);
+	const isOpen = userOverride ?? autoOpen;
 
 	const statusIndicator = isLiveTool ? (
 		<LoaderCircle
@@ -221,7 +231,7 @@ export const AssistantToolCall = memo(function AssistantToolCall({
 			<details
 				className="group/out flex flex-col"
 				onToggle={(event) => {
-					setIsOpen(event.currentTarget.open);
+					setUserOverride(event.currentTarget.open);
 				}}
 				open={isOpen}
 			>
