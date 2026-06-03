@@ -957,7 +957,7 @@ mod tests {
     #[test]
     fn incremental_persist_writes_effort_and_permission_mode() {
         let dir = tempfile::tempdir().unwrap();
-        let _guard = crate::data_dir::TEST_ENV_LOCK.lock().unwrap();
+        let _guard = crate::data_dir::lock_test_env();
         std::env::set_var("HELMOR_DATA_DIR", dir.path());
 
         let db_path = setup_test_db(dir.path());
@@ -1030,7 +1030,7 @@ mod tests {
     #[test]
     fn incremental_persist_preserves_existing_values_when_null() {
         let dir = tempfile::tempdir().unwrap();
-        let _guard = crate::data_dir::TEST_ENV_LOCK.lock().unwrap();
+        let _guard = crate::data_dir::lock_test_env();
         std::env::set_var("HELMOR_DATA_DIR", dir.path());
 
         let db_path = setup_test_db(dir.path());
@@ -1088,7 +1088,7 @@ mod tests {
     #[test]
     fn incremental_persist_turn_messages() {
         let dir = tempfile::tempdir().unwrap();
-        let _guard = crate::data_dir::TEST_ENV_LOCK.lock().unwrap();
+        let _guard = crate::data_dir::lock_test_env();
         std::env::set_var("HELMOR_DATA_DIR", dir.path());
 
         let db_path = setup_test_db(dir.path());
@@ -1158,7 +1158,7 @@ mod tests {
         use crate::pipeline::types::MessageRole as PipelineRole;
 
         let dir = tempfile::tempdir().unwrap();
-        let _guard = crate::data_dir::TEST_ENV_LOCK.lock().unwrap();
+        let _guard = crate::data_dir::lock_test_env();
         std::env::set_var("HELMOR_DATA_DIR", dir.path());
 
         let db_path = setup_test_db(dir.path());

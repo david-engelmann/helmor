@@ -1265,7 +1265,15 @@ mod tests {
     /// over its victim list). The test would hang the suite if the
     /// lock were held; finishing under the timeout proves the
     /// invariant.
+    ///
+    /// `#[serial]`: this test forks `sh -c "sleep 60"` and polls for
+    /// the process to register. Under the full suite's CPU pressure
+    /// (~1900 tests sharing cores), fork + spawn can outrun any
+    /// fixed-wall-clock register deadline. Running serially keeps the
+    /// timing assertion meaningful without padding the wait to absurd
+    /// durations. Pairs with `kill_terminates_running_script_quickly`.
     #[test]
+    #[serial_test::serial]
     fn kill_all_does_not_deadlock_against_concurrent_unregister() {
         let mgr = std::sync::Arc::new(ScriptProcessManager::new());
         let ctx = ScriptContext {
@@ -1385,7 +1393,13 @@ mod tests {
 
     // ── kill() against a live run_script actually stops it ─────────────────
 
+    /// `#[serial]`: see the comment on
+    /// `kill_all_does_not_deadlock_against_concurrent_unregister` for
+    /// the rationale — both tests fork `sleep 60` and assert on
+    /// register-then-kill latency, which is unreliable under full-
+    /// suite parallel CPU pressure.
     #[test]
+    #[serial_test::serial]
     fn kill_terminates_running_script_quickly() {
         let mgr = Arc::new(ScriptProcessManager::new());
         let ctx = ScriptContext {
@@ -1420,7 +1434,8 @@ mod tests {
         });
 
         // Wait until run_script has registered (polling is fine here — the
-        // test is checking Stop latency, not register latency).
+        // test is checking Stop latency, not register latency). Test is
+        // `#[serial]` so 5s of dedicated CPU is plenty.
         let register_deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let exists = mgr.processes.lock().unwrap().contains_key(&key);

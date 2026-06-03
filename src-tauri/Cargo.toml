@@ -129,6 +129,10 @@ path = "src/bin/helmor-server.rs"
 
 [dev-dependencies]
 insta = { version = "1", features = ["yaml", "glob"] }
+# `serial_test` for tests that fork subprocesses (workspace::scripts)
+# and need bounded CPU pressure for timing-based assertions. Lighter
+# than gating the whole binary with `--test-threads=1`.
+serial_test = "3"
 
 # ---------------------------------------------------------------------------
 # Dev profile: optimised for fastest compilation, not runtime performance.

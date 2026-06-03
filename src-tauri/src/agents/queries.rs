@@ -1342,7 +1342,7 @@ mod tests {
     #[test]
     fn fallback_resolves_to_repo_root_path() {
         let dir = tempfile::tempdir().unwrap();
-        let _guard = crate::data_dir::TEST_ENV_LOCK.lock().unwrap();
+        let _guard = crate::data_dir::lock_test_env();
         std::env::set_var("HELMOR_DATA_DIR", dir.path());
 
         setup_test_db(dir.path());
@@ -1363,7 +1363,7 @@ mod tests {
     #[test]
     fn fallback_noop_when_repo_root_path_does_not_exist() {
         let dir = tempfile::tempdir().unwrap();
-        let _guard = crate::data_dir::TEST_ENV_LOCK.lock().unwrap();
+        let _guard = crate::data_dir::lock_test_env();
         std::env::set_var("HELMOR_DATA_DIR", dir.path());
 
         setup_test_db(dir.path());
@@ -1382,7 +1382,7 @@ mod tests {
     #[test]
     fn fallback_noop_when_repo_not_in_db() {
         let dir = tempfile::tempdir().unwrap();
-        let _guard = crate::data_dir::TEST_ENV_LOCK.lock().unwrap();
+        let _guard = crate::data_dir::lock_test_env();
         std::env::set_var("HELMOR_DATA_DIR", dir.path());
 
         setup_test_db(dir.path());

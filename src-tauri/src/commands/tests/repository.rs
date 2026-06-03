@@ -266,8 +266,15 @@ fn update_repository_remote_also_updates_default_branch() {
         None,
     )
     .unwrap();
+    // `safe.bareRepository=all` so the in-test `-C <bare>` invocations
+    // work regardless of the operator's global git config (modern git
+    // defaults to `explicit`, which refuses bare-repo ops discovered
+    // via path walking — that's the surface the operator-OS upgrade
+    // started biting around git 2.42+).
     git_ops::run_git(
         [
+            "-c",
+            "safe.bareRepository=all",
             "-C",
             upstream_bare.to_str().unwrap(),
             "symbolic-ref",
@@ -290,7 +297,18 @@ fn update_repository_remote_also_updates_default_branch() {
         None,
     )
     .unwrap();
-    git_ops::run_git(["-C", root, "fetch", "upstream"], None).unwrap();
+    git_ops::run_git(
+        [
+            "-c",
+            "safe.bareRepository=all",
+            "-C",
+            root,
+            "fetch",
+            "upstream",
+        ],
+        None,
+    )
+    .unwrap();
 
     let repo_before = repos::load_repository_by_id(&harness.repo_id)
         .unwrap()

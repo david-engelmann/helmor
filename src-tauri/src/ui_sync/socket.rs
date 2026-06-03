@@ -137,12 +137,12 @@ pub fn is_listener_running() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_dir::TEST_ENV_LOCK;
+    use crate::data_dir::lock_test_env;
     use crate::ui_sync::events::UiMutationEvent;
 
     #[test]
     fn socket_path_uses_run_dir() {
-        let _lock = TEST_ENV_LOCK.lock().unwrap();
+        let _lock = lock_test_env();
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("HELMOR_DATA_DIR", dir.path());
 
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn is_listener_running_returns_false_without_socket() {
-        let _lock = TEST_ENV_LOCK.lock().unwrap();
+        let _lock = lock_test_env();
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("HELMOR_DATA_DIR", dir.path());
         // Socket file has not been created — listener must report false.
@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn notify_running_app_returns_false_without_socket() {
-        let _lock = TEST_ENV_LOCK.lock().unwrap();
+        let _lock = lock_test_env();
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("HELMOR_DATA_DIR", dir.path());
         let result = notify_running_app(UiMutationEvent::WorkspaceListChanged).unwrap();
