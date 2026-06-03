@@ -330,6 +330,89 @@ fn ssh_transport_completes_handshake_and_health_against_linux_container() {
     );
 }
 
+/// Sustained-load soak: hammer a cheap RPC (`workspace_status`) at the
+/// daemon for [`SOAK_DURATION_SECS`] seconds and assert the daemon's
+/// RSS stays bounded. Catches transport-layer leaks (per-call subscriber
+/// piles, growing pending-id maps, etc.) that a one-shot E2E test can't.
+///
+/// Gated behind `#[ignore]` so `cargo test --tests` doesn't pay the
+/// 5-minute price on every push; CI's `Remote server E2E` skips this
+/// by default. Run via:
+///
+///   cargo test --test remote_docker_e2e soak_workspace_status -- \
+///     --ignored --nocapture --test-threads=1
+///
+/// or via the `Remote server soak` GitHub workflow (manual dispatch).
+const SOAK_DURATION_SECS: u64 = 300; // 5 min — long enough to spot leaks, short enough for `workflow_dispatch`.
+const SOAK_RSS_GROWTH_BUDGET_BYTES: u64 = 64 * 1024 * 1024; // 64 MB peak growth over the run
+
+#[test]
+#[ignore = "soak: gated, run via `cargo test soak_workspace_status -- --ignored --nocapture`"]
+fn soak_workspace_status_against_linux_container() {
+    if !enabled() {
+        eprintln!("skipping docker soak (set {ENABLE_ENV}=1 to run)");
+        return;
+    }
+    let harness = DockerHarness::up();
+    let runtime = RemoteSshRuntime::connect_ssh(harness.host_alias(), REMOTE_BINARY)
+        .expect("connect_ssh for soak");
+
+    let repo_path = "/home/e2e/e2e-soak-repo";
+    init_repo_in_container(harness.service, repo_path);
+
+    let initial_rss = sample_daemon_rss(harness.service);
+    eprintln!("soak start — initial daemon RSS: {initial_rss} bytes");
+
+    let mut peak_rss = initial_rss;
+    let mut iterations = 0u64;
+    let deadline = std::time::Instant::now() + Duration::from_secs(SOAK_DURATION_SECS);
+    while std::time::Instant::now() < deadline {
+        let _ = runtime
+            .workspace_status(Path::new(repo_path))
+            .expect("workspace.status round-trip during soak");
+        iterations += 1;
+
+        // Sample every 100 iters — cheap, and we don't want sampling
+        // noise to dominate the wall clock.
+        if iterations.is_multiple_of(100) {
+            let now_rss = sample_daemon_rss(harness.service);
+            peak_rss = peak_rss.max(now_rss);
+            eprintln!(
+                "soak iter={iterations} now_rss={now_rss} peak_rss={peak_rss} (initial={initial_rss})"
+            );
+        }
+    }
+
+    eprintln!(
+        "soak done — {iterations} iterations, peak RSS {peak_rss}, initial RSS {initial_rss}, growth {} bytes",
+        peak_rss.saturating_sub(initial_rss)
+    );
+    assert!(
+        peak_rss.saturating_sub(initial_rss) < SOAK_RSS_GROWTH_BUDGET_BYTES,
+        "daemon RSS grew {} bytes during soak — leak suspected (budget {SOAK_RSS_GROWTH_BUDGET_BYTES} bytes; initial {initial_rss}, peak {peak_rss})",
+        peak_rss.saturating_sub(initial_rss),
+    );
+}
+
+/// Read the daemon's RSS from inside the container. `daemon.pid`
+/// holds the active daemon's PID; `/proc/<pid>/status`'s `VmRSS` is
+/// in KiB and gets converted to bytes for the budget comparison.
+fn sample_daemon_rss(service: &str) -> u64 {
+    let script = "pid=$(cat $HOME/.helmor/server/daemon.pid 2>/dev/null); \
+                  if [ -z \"$pid\" ]; then echo 0; exit 0; fi; \
+                  grep -E '^VmRSS:' /proc/$pid/status 2>/dev/null | awk '{print $2}'";
+    let out = Command::new("docker")
+        .args(["exec", "--user", "e2e", service, "bash", "-lc", script])
+        .output()
+        .expect("docker exec for RSS sample");
+    if !out.status.success() {
+        return 0;
+    }
+    let kib_str = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let kib: u64 = kib_str.parse().unwrap_or(0);
+    kib * 1024
+}
+
 /// `git init` + initial commit inside the container via `docker exec`.
 fn init_repo_in_container(service: &str, repo_path: &str) {
     let script = format!(

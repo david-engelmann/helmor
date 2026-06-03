@@ -2182,4 +2182,54 @@ mod tests {
             serde_json::from_str(&wire).unwrap();
         assert_eq!(round, snapshot);
     }
+
+    /// Regression test for the subprocess-cleanup invariant the
+    /// docs/runbook leans on: dropping an `RpcWriter` that owns a
+    /// child kills + reaps the child. Without this the SSH transport
+    /// would leak `ssh user@host` processes on every reconnect cycle.
+    #[test]
+    fn dropping_rpc_writer_reaps_owned_child() {
+        // `sleep 30` is a stand-in for the long-lived `ssh ... helmor-server`
+        // child the SSH transport owns in production. It sits idle on stdin
+        // so we don't have to feed it any JSON-RPC frames.
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id();
+
+        let writer = RpcWriter {
+            writer: Box::new(std::io::sink()),
+            child: Some(child),
+        };
+        drop(writer);
+
+        // After drop the child must NOT be visible to `kill -0 <pid>`
+        // (signal 0 probes process existence without delivering a
+        // real signal). We poll briefly because `child.wait()` is
+        // synchronous in Drop but the kernel can briefly retain the
+        // pid until the parent's drop completes on its scheduler tick.
+        let dead_within_timeout = (|| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                // SAFETY: `kill(pid, 0)` is a process-existence probe;
+                // it never writes anything or sends a signal. Errno
+                // ESRCH (3) → process gone.
+                let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
+                if !alive {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            false
+        })();
+
+        assert!(
+            dead_within_timeout,
+            "child pid {pid} should be reaped within 2s of RpcWriter::drop"
+        );
+    }
 }
