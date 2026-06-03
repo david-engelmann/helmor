@@ -24,6 +24,15 @@ name: Release Plan
 # pushes authored by GITHUB_TOKEN (recursion guard). A PAT-authored tag
 # push does fire downstream workflows, which is how publish.yml knows to
 # build.
+#
+# Gating: this workflow is off by default — set the repository variable
+# `RELEASE_ENABLED=true` to opt in. Forks that aren't cutting their own
+# releases (e.g. private mirrors of upstream `dohooo/helmor`) leave the
+# variable unset and the job is `skipped` on every push, which keeps
+# the run status gray instead of red and avoids needing a PAT secret
+# at all. To turn it on: `gh variable set RELEASE_ENABLED=true -R <owner>/helmor`
+# AND set the `HELMOR_RELEASE_PAT` secret (fine-grained PAT scoped to
+# the repo with Contents=write + Pull requests=write).
 
 on:
   workflow_dispatch:
@@ -46,6 +55,10 @@ jobs:
   release-plan:
     name: Create release PR or publish
     runs-on: ubuntu-latest
+    # Opt-in via repo variable so forks not cutting their own releases
+    # (e.g. `david-engelmann/helmor`) skip the job cleanly instead of
+    # failing on the missing `HELMOR_RELEASE_PAT` secret.
+    if: vars.RELEASE_ENABLED == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v6
