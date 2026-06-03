@@ -1079,9 +1079,11 @@ describe("WorkspaceComposerContainer", () => {
 			updatedAt: 0,
 		};
 
-		function setupCodexSessionWithGoal(
-			{ seedCapabilities = true }: { seedCapabilities?: boolean } = {},
-		): {
+		function setupCodexSessionWithGoal({
+			seedCapabilities = true,
+		}: {
+			seedCapabilities?: boolean;
+		} = {}): {
 			queryClient: ReturnType<typeof createHelmorQueryClient>;
 		} {
 			const queryClient = createHelmorQueryClient();
