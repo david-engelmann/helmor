@@ -1,7 +1,8 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     fs,
     path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
 };
 
 use anyhow::{bail, Context, Result};
@@ -24,6 +25,32 @@ const MAX_UNTRACKED_LINECOUNT_BYTES: u64 = 4 * 1_048_576;
 /// Cap on how large a changed file we'll eagerly prefetch contents for.
 /// Mirrors the editor's quick-open prefetch budget.
 const MAX_PREFETCH_BYTES: u64 = 1_048_576;
+
+/// Set of workspace-root paths we've already logged a "missing" warning
+/// for. Bounded by the number of distinct paths the process ever sees;
+/// even pessimistic estimates put that in the tens, not millions.
+static MISSING_ROOTS_WARNED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
+/// Emit a one-shot WARN the first time we see a missing workspace
+/// root; stay silent on every subsequent miss for the same path. The
+/// pure-function variant takes the set explicitly so tests can drive
+/// the dedupe without poking at the static.
+fn warn_workspace_root_missing(workspace_root: &Path, seen: &OnceLock<Mutex<HashSet<PathBuf>>>) {
+    let set = seen.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut guard = match set.lock() {
+        Ok(g) => g,
+        // A poisoned mutex isn't fatal — fall back to noisy logging
+        // rather than abort. The poisoned-state case is only reachable
+        // if a prior holder panicked, which would already be visible.
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if guard.insert(workspace_root.to_path_buf()) {
+        tracing::warn!(
+            path = %workspace_root.display(),
+            "workspace root missing; returning empty change list (further occurrences for this path will be silent)",
+        );
+    }
+}
 
 #[derive(Default, Clone, Copy)]
 struct AreaStats {
@@ -93,10 +120,12 @@ pub fn list_workspace_changes_for_workspace(
         // repo moved). The inspector polls this on a fixed interval — if
         // we bailed, every tick would log an error. Return empty changes
         // silently; the selection layer is responsible for reconciling.
-        tracing::warn!(
-            path = %workspace_root.display(),
-            "workspace root missing; returning empty change list",
-        );
+        //
+        // Dedupe the warning so the daemon's log isn't spammed at the
+        // poll rate (~6/min, ~1 KB/min, ~50 MB/month). One line per
+        // path per process is enough to flag the situation in
+        // post-mortems without drowning everything else out.
+        warn_workspace_root_missing(workspace_root, &MISSING_ROOTS_WARNED);
         return Ok(Vec::new());
     }
 
@@ -721,5 +750,86 @@ fn fill_untracked_unstaged(
         // counts; failure is harmless (count stays 0).
         let line_count = u32::try_from(text.lines().count()).unwrap_or(u32::MAX);
         entry.unstaged.insertions = line_count;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracing::subscriber::with_default;
+    use tracing_subscriber::{fmt, layer::SubscriberExt, registry::Registry, EnvFilter};
+
+    /// Capture WARN-level events emitted while `f` runs so the dedupe
+    /// helper can be inspected without standing up the full Helmor
+    /// logging subscriber.
+    fn capture_warns<F: FnOnce()>(f: F) -> Vec<String> {
+        // Buffer that collects line-by-line WARN output. `fmt`'s
+        // writer trait can drop into anything `MakeWriter`-able; a
+        // `Mutex<Vec<u8>>` is enough for the per-test scratch.
+        use std::sync::Arc;
+        let buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let buf_for_writer = Arc::clone(&buf);
+        let make_writer = move || -> Box<dyn std::io::Write + Send> {
+            #[derive(Clone)]
+            struct Sink(Arc<Mutex<Vec<u8>>>);
+            impl std::io::Write for Sink {
+                fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                    self.0.lock().unwrap().extend_from_slice(buf);
+                    Ok(buf.len())
+                }
+                fn flush(&mut self) -> std::io::Result<()> {
+                    Ok(())
+                }
+            }
+            Box::new(Sink(Arc::clone(&buf_for_writer)))
+        };
+        let layer = fmt::layer()
+            .with_writer(make_writer)
+            .with_target(false)
+            .with_level(false);
+        let subscriber = Registry::default().with(EnvFilter::new("warn")).with(layer);
+        with_default(subscriber, f);
+        let out = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        out.lines()
+            .filter(|line| line.contains("workspace root missing"))
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn warn_workspace_root_missing_fires_once_per_path() {
+        let seen: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+        let logs = capture_warns(|| {
+            for _ in 0..10 {
+                warn_workspace_root_missing(Path::new("/missing/workspace"), &seen);
+            }
+        });
+        assert_eq!(
+            logs.len(),
+            1,
+            "expected one WARN despite 10 calls; got {logs:?}",
+        );
+        assert!(
+            logs[0].contains("/missing/workspace"),
+            "WARN should include the missing path: {}",
+            logs[0],
+        );
+    }
+
+    #[test]
+    fn warn_workspace_root_missing_fires_per_distinct_path() {
+        let seen: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+        let logs = capture_warns(|| {
+            warn_workspace_root_missing(Path::new("/missing/a"), &seen);
+            warn_workspace_root_missing(Path::new("/missing/b"), &seen);
+            // Repeats stay silent.
+            warn_workspace_root_missing(Path::new("/missing/a"), &seen);
+            warn_workspace_root_missing(Path::new("/missing/b"), &seen);
+        });
+        assert_eq!(
+            logs.len(),
+            2,
+            "expected one WARN per distinct path; got {logs:?}"
+        );
     }
 }
