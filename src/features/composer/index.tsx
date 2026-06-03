@@ -4,7 +4,7 @@ import { LexicalErrorBoundary } from "@lexical/react/LexicalErrorBoundary";
 import { HistoryPlugin } from "@lexical/react/LexicalHistoryPlugin";
 import { PlainTextPlugin } from "@lexical/react/LexicalPlainTextPlugin";
 import type { LexicalEditor, SerializedEditorState } from "lexical";
-import { $getRoot } from "lexical";
+import { $createParagraphNode, $createTextNode, $getRoot } from "lexical";
 import {
 	ArrowUp,
 	Check,
@@ -74,14 +74,23 @@ import { EditablePlugin } from "./editor/plugins/editable-plugin";
 import { EditorRefPlugin } from "./editor/plugins/editor-ref-plugin";
 import { FileMentionPlugin } from "./editor/plugins/file-mention-plugin";
 import { HasContentPlugin } from "./editor/plugins/has-content-plugin";
+import { HistoryRecallPlugin } from "./editor/plugins/history-recall-plugin";
 import { PasteImagePlugin } from "./editor/plugins/paste-image-plugin";
+import { ShimmerKeywordPlugin } from "./editor/plugins/shimmer-keyword-plugin";
 import { SlashCommandPlugin } from "./editor/plugins/slash-command-plugin";
 import { SubmitPlugin } from "./editor/plugins/submit-plugin";
+import { ShimmerKeywordNode } from "./editor/shimmer-keyword-node";
 import { $extractComposerContent } from "./editor/utils";
 import { $appendComposerInsertItems } from "./editor-ops";
 import { FastModeLottieIcon } from "./fast-mode-lottie-icon";
 import { GoalReplaceConfirm } from "./goal-replace-confirm";
+import type { InputHistoryEntry } from "./input-history";
 import { PermissionPanel, type PermissionPanelProps } from "./permission-panel";
+import {
+	type ComposerPrefill,
+	consumeComposerPrefill,
+	subscribeComposerPrefill,
+} from "./prefill-queue";
 import type { StartSubmitMode } from "./start-submit-mode";
 import { UsageStatsIndicator } from "./usage-stats-indicator";
 import type { UserInputResponseHandler } from "./user-input";
@@ -104,10 +113,15 @@ type WorkspaceComposerProps = {
 			startSubmitMode?: StartSubmitMode;
 			/** Snapshot of the editor's full Lexical state at submit time.
 			 *  Captured synchronously before the editor clears so callers
-			 *  that need to round-trip chips/text/images (e.g. the kanban
-			 *  "backlog" submit handler that copies the draft into a freshly
-			 *  created session) can do so without a re-encode pass. */
+			 *  that need to round-trip chips/text/images (e.g. the
+			 *  start-composer "backlog" submit handler that copies the
+			 *  draft into a freshly created session) can do so without a
+			 *  re-encode pass. */
 			editorStateSnapshot?: SerializedEditorState;
+			/** Composer's mount-time provisional session id; forwarded to
+			 *  `SubmitPayload` so StartPage submit seeds the new
+			 *  `sessions.id` with it. Ignored when already bound. */
+			provisionalSessionId?: string;
 		},
 	) => void;
 	disabled?: boolean;
@@ -131,6 +145,7 @@ type WorkspaceComposerProps = {
 	restoreImages?: string[];
 	restoreFiles?: string[];
 	restoreCustomTags?: ComposerCustomTag[];
+	restoreEditorState?: SerializedEditorState | null;
 	restoreNonce?: number;
 	pendingInsertRequests?: ResolvedComposerInsertRequest[];
 	onPendingInsertRequestsConsumed?: (ids: string[]) => void;
@@ -146,6 +161,8 @@ type WorkspaceComposerProps = {
 	addDirCandidates?: readonly CandidateDirectory[];
 	/** Called when the user selects an entry from the /add-dir popup. */
 	onPickAddDir?: (entry: AddDirPickerEntry) => void;
+	/** Open the independent workflow-progress panel (the `/workflows` command). */
+	onOpenWorkflows?: () => void;
 	pendingUserInput?: PendingUserInput | null;
 	onUserInputResponse?: UserInputResponseHandler;
 	userInputResponsePending?: boolean;
@@ -184,13 +201,29 @@ type WorkspaceComposerProps = {
 	contextPanelOpen?: boolean;
 	onToggleContextPanel?: () => void;
 	/** Custom placeholder string. When omitted, falls back to the default
-	 *  "Ask to make changes…" copy. The kanban view supplies a hint that
-	 *  nudges the user toward composing inbox sources for new workspaces. */
+	 *  "Ask to make changes…" copy. The start surface supplies a hint
+	 *  that nudges the user toward composing inbox sources for new
+	 *  workspaces. */
 	placeholder?: string;
 	startSubmitMenu?: boolean;
 	startSubmitMode?: StartSubmitMode;
 	onStartSubmitModeChange?: (mode: StartSubmitMode) => void;
+	/** Surface-specific focus scope. Drives `data-focus-scope` on the
+	 *  composer root and gates surface-only hotkeys (e.g. plan-mode toggle
+	 *  fires only inside `workspace-composer`, never on the start surface). */
+	focusScope?: "start-composer" | "workspace-composer";
+	/** Lazy getter for the per-session input recall list, most-recent
+	 *  first. Called by `HistoryRecallPlugin` on each ArrowUp/Down so the
+	 *  composer doesn't have to re-render when the thread cache changes. */
+	getInputHistory?: () => readonly InputHistoryEntry[];
 };
+
+/**
+ * Composer keywords that get the inline shimmer cue (see `ShimmerKeywordPlugin`
+ * + the `composer-shimmer-keyword` CSS). Whole-word regex fragments, matched
+ * case-insensitively at word boundaries.
+ */
+const SHIMMER_KEYWORDS = ["workflows?", "ultrathink"] as const;
 
 const EMPTY_SLASH_COMMANDS: readonly SlashCommandEntry[] = [];
 const EMPTY_LINKED_DIRECTORIES: readonly string[] = [];
@@ -237,6 +270,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 	restoreImages = [],
 	restoreFiles = [],
 	restoreCustomTags = [],
+	restoreEditorState = null,
 	restoreNonce = 0,
 	pendingInsertRequests = [],
 	onPendingInsertRequestsConsumed,
@@ -251,6 +285,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 	linkedDirectoriesDisabled = false,
 	addDirCandidates = EMPTY_CANDIDATE_DIRECTORIES,
 	onPickAddDir = noopPickAddDir,
+	onOpenWorkflows,
 	pendingUserInput = null,
 	onUserInputResponse = noopUserInputResponse,
 	userInputResponsePending = false,
@@ -271,6 +306,8 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 	startSubmitMenu = false,
 	startSubmitMode = "startNow",
 	onStartSubmitModeChange,
+	focusScope = "workspace-composer",
+	getInputHistory,
 }: WorkspaceComposerProps) {
 	const instanceIdRef = useRef(
 		`composer-${Math.random().toString(36).slice(2, 10)}`,
@@ -278,6 +315,13 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 	useEffect(() => {
 		recordComposerRender(contextKey, instanceIdRef.current);
 	});
+
+	// Pre-allocated UUID used as the paste-cache bucket id when
+	// `sessionId` isn't bound yet (StartPage). Forwarded on submit so the
+	// new session row reuses it; otherwise reclaimed by the paste-cache
+	// sweep after `UNCLAIMED_GRACE`.
+	const provisionalSessionIdRef = useRef<string>(crypto.randomUUID());
+	const effectiveSessionId = sessionId ?? provisionalSessionIdRef.current;
 	const editorRef = useRef<LexicalEditor | null>(null);
 	// Root element of the composer surface. Used as the portal anchor for the
 	// slash/@ typeahead popups so they hug the top edge of the composer box
@@ -302,6 +346,45 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 		return () =>
 			window.removeEventListener("helmor:focus-composer", handleFocusComposer);
 	}, [disabled]);
+
+	// Apply a one-shot composer prefill (e.g. from the Inspector's
+	// "Create run action" flow). Structure:
+	//   - intro line on top, caret placed at its end so the user can
+	//     finish the sentence;
+	//   - blank line + horizontal rule;
+	//   - body lines below.
+	// Pulls a queued prefill on mount AND subscribes for live deliveries
+	// so a click that targets the currently-mounted session also lands.
+	useEffect(() => {
+		if (!sessionId) return;
+		const apply = (prefill: ComposerPrefill) => {
+			const editor = editorRef.current;
+			if (!editor) {
+				// EditorRefPlugin sets the ref in a mount-time effect, so on
+				// the very first paint the ref may still be null. Retry on
+				// the next frame — by then Lexical's child plugins have run.
+				requestAnimationFrame(() => apply(prefill));
+				return;
+			}
+			editor.update(() => {
+				const root = $getRoot();
+				root.clear();
+				const introText = $createTextNode(prefill.intro);
+				const introPara = $createParagraphNode().append(introText);
+				const blankPara = $createParagraphNode();
+				const rulePara = $createParagraphNode().append($createTextNode("---"));
+				const bodyParas = prefill.body
+					.split("\n")
+					.map((line) => $createParagraphNode().append($createTextNode(line)));
+				root.append(introPara, blankPara, rulePara, ...bodyParas);
+				introText.select(prefill.intro.length, prefill.intro.length);
+			});
+			editor.focus();
+		};
+		const queued = consumeComposerPrefill(sessionId);
+		if (queued) apply(queued);
+		return subscribeComposerPrefill(sessionId, apply);
+	}, [sessionId]);
 	const selectedModel = useMemo(() => {
 		for (const section of modelSections) {
 			for (const option of section.options) {
@@ -376,7 +459,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 		);
 	}, []);
 	const composerToolbarTriggerClassName =
-		"cursor-interactive rounded-[9px] px-1 py-0.5 text-[13px] font-medium transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/50";
+		"cursor-interactive rounded-[9px] px-1 py-0.5 text-ui font-medium transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/50";
 	// Shared gate for Send and Steer — the only difference is whether a
 	// stream is currently running. When sending, ⌘Enter / Enter still
 	// fires `handleSubmit`; the use-streaming hook dispatches to the
@@ -402,6 +485,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 			FileBadgeNode,
 			CustomTagBadgeNode,
 			AddDirTriggerNode,
+			ShimmerKeywordNode,
 		],
 		onError: onEditorError,
 	}).current;
@@ -500,9 +584,9 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 				if (!startSubmitMenu) return;
 			// Snapshot the editor's full Lexical state BEFORE the clear below
 			// wipes it. Synchronous capture is critical because callers that
-			// want to round-trip the draft (e.g. kanban "backlog" submit
-			// copying chips/text/images into a freshly-created session) read
-			// from this snapshot — by the time their async work runs, the
+			// want to round-trip the draft (e.g. the start-composer "backlog"
+			// submit copying chips/text/images into a freshly-created session)
+			// read from this snapshot — by the time their async work runs, the
 			// editor is already empty.
 			const editorStateSnapshot = editor
 				.getEditorState()
@@ -517,6 +601,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 						? options?.startSubmitMode
 						: "createOnly",
 				editorStateSnapshot,
+				provisionalSessionId: provisionalSessionIdRef.current,
 			});
 			editor.update(() => {
 				$getRoot().clear();
@@ -581,10 +666,16 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 				return;
 			}
 
+			// Plan mode is a workspace-only concept — the start composer has
+			// no session to flip yet. Gating on `focusScope` here keeps the
+			// hotkey from double-firing alongside the start surface's
+			// `Shift+Tab` (cycle repository) without forcing the shortcuts
+			// registry to thread surface awareness through every binding.
 			if (
 				togglePlanShortcut &&
 				hotkey === togglePlanShortcut &&
-				supportsPlanMode
+				supportsPlanMode &&
+				focusScope === "workspace-composer"
 			) {
 				event.preventDefault();
 				event.stopPropagation();
@@ -593,6 +684,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 		},
 		[
 			inputDisabled,
+			focusScope,
 			onChangePermissionMode,
 			permissionMode,
 			supportsPlanMode,
@@ -607,7 +699,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 		<div
 			ref={composerRootRef}
 			aria-label="Workspace composer"
-			data-focus-scope="composer"
+			data-focus-scope={focusScope}
 			onKeyDownCapture={handleComposerKeyDownCapture}
 			className={cn(
 				"relative flex flex-col rounded-2xl border border-border/40 bg-sidebar shadow-[0_-1px_8px_rgba(0,0,0,0.05),0_0_0_1px_rgba(255,255,255,0.02)]",
@@ -698,13 +790,13 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 										aria-label="Workspace input"
 										aria-multiline
 										className={cn(
-											"composer-editor min-h-[64px] max-h-[240px] resize-none overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words bg-transparent text-[14px] leading-5 tracking-[-0.01em] text-foreground outline-none",
+											"composer-editor min-h-[64px] max-h-[240px] resize-none overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words bg-transparent text-body leading-5 tracking-[-0.01em] text-foreground outline-none",
 											showFocusHint && "pr-28",
 										)}
 									/>
 								}
 								placeholder={
-									<div className="pointer-events-none absolute left-0 top-0 text-[14px] leading-5 tracking-[-0.01em] text-muted-foreground/70">
+									<div className="pointer-events-none absolute left-0 top-0 text-body leading-5 tracking-[-0.01em] text-muted-foreground/70">
 										{hasPlanReview && permissionMode === "plan"
 											? "Describe what to change, then click Request Changes"
 											: (placeholder ??
@@ -714,7 +806,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 								ErrorBoundary={LexicalErrorBoundary}
 							/>
 							{showFocusHint && focusShortcut ? (
-								<div className="pointer-events-none absolute right-0 top-0 hidden h-5 items-center gap-1 text-[13px] leading-5 tracking-[-0.01em] text-muted-foreground/70 sm:flex">
+								<div className="pointer-events-none absolute right-0 top-0 hidden h-5 items-center gap-1 text-ui leading-5 tracking-[-0.01em] text-muted-foreground/70 sm:flex">
 									<InlineShortcutDisplay hotkey={focusShortcut} />
 									<span>to focus</span>
 								</div>
@@ -733,6 +825,17 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 								// client-action name is a no-op here for now.
 								if (name === "add-dir" && editorRef.current) {
 									$insertAddDirTrigger(editorRef.current, nodeToReplace);
+								}
+								// `/workflows` opens the independent progress panel and
+								// is NEVER sent — drop the typed token so the composer
+								// returns to empty.
+								if (name === "workflows") {
+									if (nodeToReplace) {
+										editorRef.current?.update(() => {
+											nodeToReplace.remove();
+										});
+									}
+									onOpenWorkflows?.();
 								}
 							}}
 							popupAnchorRef={composerRootRef}
@@ -754,7 +857,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 							disabled={submitDisabledForPlugin}
 						/>
 						<CompositionGuardPlugin />
-						<PasteImagePlugin />
+						<PasteImagePlugin sessionId={effectiveSessionId} />
 						<DropFilePlugin />
 						<AutoResizePlugin minHeight={64} maxHeight={240} />
 						<EditorRefPlugin editorRef={editorRef} />
@@ -764,14 +867,22 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 							restoreImages={restoreImages}
 							restoreFiles={restoreFiles}
 							restoreCustomTags={restoreCustomTags}
+							restoreEditorState={restoreEditorState}
 							restoreNonce={restoreNonce}
 						/>
+						{getInputHistory ? (
+							<HistoryRecallPlugin
+								getHistory={getInputHistory}
+								scopeKey={contextKey}
+							/>
+						) : null}
 						<EditablePlugin disabled={inputDisabled} />
 						<HasContentPlugin onChange={setHasContent} />
+						<ShimmerKeywordPlugin keywords={SHIMMER_KEYWORDS} />
 					</LexicalComposer>
 
 					{sendError ? (
-						<div className="mt-2 rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-[12px] text-muted-foreground">
+						<div className="mt-2 rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-small text-muted-foreground">
 							{sendError}
 						</div>
 					) : null}
@@ -779,7 +890,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 					<div className="mt-2.5 flex items-end justify-between gap-3">
 						<div className="flex flex-wrap items-center gap-2">
 							{modelsLoading ? (
-								<ShimmerText className="px-1 py-0.5 text-[13px] text-muted-foreground">
+								<ShimmerText className="px-1 py-0.5 text-ui text-muted-foreground">
 									Loading models…
 								</ShimmerText>
 							) : (
@@ -841,6 +952,11 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 																	{option.label}
 																</span>
 															</div>
+															{option.id === selectedModel?.id ? (
+																<span className="text-mini text-foreground">
+																	✓
+																</span>
+															) : null}
 														</DropdownMenuItem>
 													))}
 													{section.id === "claude" &&
@@ -954,7 +1070,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 																</span>
 															</div>
 															{level === effectiveEffort ? (
-																<span className="text-[11px] text-foreground">
+																<span className="text-mini text-foreground">
 																	✓
 																</span>
 															) : null}
@@ -969,7 +1085,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 											aria-label="Plan mode"
 											disabled={toolbarDisabled}
 											className={cn(
-												`gap-1 px-1.5 text-[11px] ${composerToolbarTriggerClassName}`,
+												`gap-1 px-1.5 text-mini ${composerToolbarTriggerClassName}`,
 												permissionMode === "plan"
 													? "text-plan hover:text-plan"
 													: "text-muted-foreground/70 hover:text-muted-foreground/70",
@@ -1013,7 +1129,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 											<TooltipContent
 												side="top"
 												sideOffset={4}
-												className="flex h-[24px] items-center gap-2 rounded-md px-2 text-[12px] leading-none"
+												className="flex h-[24px] items-center gap-2 rounded-md px-2 text-small leading-none"
 											>
 												<span>Add context</span>
 												{toggleContextPanelShortcut ? (
@@ -1054,7 +1170,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 										aria-label="Request Changes"
 										onClick={handlePlanRequestChanges}
 										disabled={disabled || !hasContent}
-										className="my-0.5 h-7 cursor-interactive gap-1 rounded-lg px-2 text-[12px] transition-none text-muted-foreground hover:text-foreground"
+										className="my-0.5 h-7 cursor-interactive gap-1 rounded-lg px-2 text-small transition-none text-muted-foreground hover:text-foreground"
 									>
 										<MessageSquareMore className="size-3.5" strokeWidth={1.8} />
 										Request Changes
@@ -1065,7 +1181,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 										aria-label="Implement"
 										onClick={handlePlanImplement}
 										disabled={disabled}
-										className="my-0.5 h-7 cursor-interactive gap-1 rounded-lg px-2 text-[12px] transition-none"
+										className="my-0.5 h-7 cursor-interactive gap-1 rounded-lg px-2 text-small transition-none"
 									>
 										<Check className="size-3.5" strokeWidth={2} />
 										Implement
@@ -1175,7 +1291,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 			)}
 
 			{sendError && hasPendingUserInput ? (
-				<div className="mt-2 rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-[12px] text-muted-foreground">
+				<div className="mt-2 rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-small text-muted-foreground">
 					{sendError}
 				</div>
 			) : null}

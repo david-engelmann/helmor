@@ -11,6 +11,7 @@ import crypto from "node:crypto";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import type { AgentProxySettings } from "./agent-proxy.js";
 import {
 	CodexAppServer,
 	type JsonRpcNotification,
@@ -67,15 +68,16 @@ function resolveCodexBinPath(): string {
 		try {
 			const require = createRequire(import.meta.url);
 			const pkgJson = require.resolve(`${platformPkg}/package.json`);
-			const candidate = join(
-				dirname(pkgJson),
-				"vendor",
-				triple,
-				"codex",
-				process.platform === "win32" ? "codex.exe" : "codex",
-			);
-			if (existsSync(candidate)) {
-				return candidate;
+			const vendorRoot = join(dirname(pkgJson), "vendor", triple);
+			const binName = process.platform === "win32" ? "codex.exe" : "codex";
+			// codex >=0.134 nests the binary under `bin/`; older builds used
+			// `codex/`. Probe both so a version bump can't silently drop us
+			// to the bare-PATH fallback. Mirrors `stage-vendor.ts`.
+			for (const sub of ["bin", "codex"]) {
+				const candidate = join(vendorRoot, sub, binName);
+				if (existsSync(candidate)) {
+					return candidate;
+				}
 			}
 		} catch {
 			// Platform sub-package missing (e.g. --omit=optional) — fall through.
@@ -365,6 +367,8 @@ interface AppServerContext {
 	notificationGate: Promise<void> | null;
 	/** Last send's model id; Codex usage notifications omit it. */
 	lastSentModel: string;
+	/** Stable key for the proxy env used to spawn this app-server. */
+	agentProxyKey: string;
 	/** Wall-clock ms of the most recent "Reconnecting…" line on the
 	 *  Codex child process's stderr. Used to suppress the transient
 	 *  {method:"error"} notifications that Codex emits during its own
@@ -441,6 +445,10 @@ export class CodexAppServerManager implements SessionManager {
 	private sessions = new Map<string, AppServerContext>();
 	private pendingApprovals = new Map<string, PendingApproval>();
 	private pendingUserInputs = new Map<string, PendingUserInput>();
+	// Sessions the user hit Stop on while the codex thread was still starting
+	// up (before `ensureContext` registers a context). `sendMessage` consumes
+	// the intent after startup and tears the turn down instead of running it.
+	private abortRequested = new Set<string>();
 
 	/** Called by index.ts when frontend responds to a permission prompt. */
 	resolvePermission(permissionId: string, behavior: "allow" | "deny"): void {
@@ -487,11 +495,18 @@ export class CodexAppServerManager implements SessionManager {
 					: resolution.action === "decline"
 						? "decline"
 						: "cancel";
+			// Forward `_meta.persist` so Codex remembers session/always allow.
+			const meta =
+				(resolution.action === "submit" || resolution.action === "decline") &&
+				resolution.meta &&
+				Object.keys(resolution.meta).length > 0
+					? resolution.meta
+					: null;
 			ctx.server.sendResponse(pending.jsonRpcId, {
 				action,
 				content:
 					resolution.action === "submit" ? (resolution.content ?? null) : null,
-				_meta: null,
+				_meta: meta,
 			});
 		} else {
 			const answers =
@@ -524,9 +539,14 @@ export class CodexAppServerManager implements SessionManager {
 			effortLevel,
 			permissionMode,
 			fastMode,
+			agentProxy,
 			additionalDirectories,
 			images,
 		} = params;
+		// Drop any stale abort intent from a prior stop that landed with no
+		// live context. A genuine mid-startup stop for THIS turn is recorded
+		// again during the awaits below and caught right after ensureContext.
+		this.abortRequested.delete(sessionId);
 		const workDir = cwd ?? process.cwd();
 		const effectiveFastMode =
 			fastMode === true && modelSupportsFastMode("codex", model);
@@ -566,7 +586,17 @@ export class CodexAppServerManager implements SessionManager {
 			model,
 			permissionMode,
 			effectiveFastMode,
+			agentProxy,
 		);
+		// User hit Stop while the thread was still starting up. stopSession
+		// couldn't find a context to kill and only recorded the intent — honor
+		// it now: tear down and report the abort instead of running the turn.
+		if (this.abortRequested.delete(sessionId)) {
+			ctx.server.kill();
+			this.sessions.delete(sessionId);
+			emitter.aborted(requestId, "user_requested");
+			return;
+		}
 		// Codex usage notifications do not include a model id.
 		if (model) ctx.lastSentModel = model;
 
@@ -591,7 +621,11 @@ export class CodexAppServerManager implements SessionManager {
 		if (model) turnStartParams.model = model;
 		if (effortLevel) turnStartParams.effort = effortLevel;
 		if (effectiveFastMode) turnStartParams.serviceTier = "fast";
-		const codexMode = toCodexCollaborationMode(permissionMode, model);
+		const codexMode = toCodexCollaborationMode(
+			permissionMode,
+			model,
+			effortLevel,
+		);
 		if (codexMode) turnStartParams.collaborationMode = codexMode;
 		const codexApproval = toCodexApprovalPolicy(permissionMode);
 		if (codexApproval) turnStartParams.approvalPolicy = codexApproval;
@@ -913,6 +947,12 @@ export class CodexAppServerManager implements SessionManager {
 							? p.message
 							: "Server requested input.";
 
+					// Forward `_meta` opaquely (carries codex_approval_kind + persist).
+					const elicitationMeta =
+						p._meta && typeof p._meta === "object" && !Array.isArray(p._meta)
+							? (p._meta as Record<string, unknown>)
+							: undefined;
+
 					this.pendingUserInputs.set(userInputId, {
 						kind: "mcp-elicitation",
 						jsonRpcId: req.id,
@@ -940,13 +980,21 @@ export class CodexAppServerManager implements SessionManager {
 							userInputId,
 							serverName,
 							message,
-							{ kind: "form", schema },
+							{
+								kind: "form",
+								schema,
+								...(elicitationMeta ? { meta: elicitationMeta } : {}),
+							},
 						);
 					}
 					logger.debug(`Codex MCP elicitation request`, {
 						userInputId,
 						serverName,
 						mode: p.mode,
+						approvalKind:
+							typeof elicitationMeta?.codex_approval_kind === "string"
+								? elicitationMeta.codex_approval_kind
+								: undefined,
 					});
 					return;
 				}
@@ -1037,6 +1085,7 @@ export class CodexAppServerManager implements SessionManager {
 		const server = new CodexAppServer({
 			binaryPath: CODEX_BIN_PATH,
 			cwd,
+			agentProxy: options?.agentProxy,
 			onNotification: () => {},
 			onRequest: (req) => {
 				if (APPROVAL_METHODS.has(req.method)) {
@@ -1248,19 +1297,23 @@ export class CodexAppServerManager implements SessionManager {
 		// pause without that backup, this branch may silently no-op on
 		// the untracked turn.
 		if (action === "pause" && ctx.activeTurnId) {
-			try {
-				await ctx.server.sendRequest(
+			// Fire-and-forget: codex can take the full 5s to ACK turn/interrupt,
+			// and the Composer Stop path kills the child via stopSession right
+			// after this returns — so don't block the abort on the interrupt
+			// round-trip. The goal/set below (which actually persists the pause)
+			// is still awaited so the paused state lands before the kill.
+			ctx.server
+				.sendRequest(
 					"turn/interrupt",
 					{ threadId, turnId: ctx.activeTurnId },
 					5_000,
-				);
-			} catch (err) {
-				// Best-effort — don't let an interrupt failure block the
-				// goal state change. Codex may have just finished naturally.
-				logger.debug("mutateGoal interrupt failed (best-effort)", {
-					...errorDetails(err),
+				)
+				.catch((err) => {
+					// Best-effort — codex may have just finished naturally.
+					logger.debug("mutateGoal interrupt failed (best-effort)", {
+						...errorDetails(err),
+					});
 				});
-			}
 		}
 
 		try {
@@ -1332,7 +1385,15 @@ export class CodexAppServerManager implements SessionManager {
 
 	async stopSession(sessionId: string): Promise<void> {
 		const ctx = this.sessions.get(sessionId);
-		if (!ctx) return;
+		if (!ctx) {
+			// Mid-startup: `ensureContext` (process spawn + initialize +
+			// thread/start) hasn't registered a context yet, so there's
+			// nothing to kill. Record the intent — `sendMessage` honors it
+			// the moment startup lands instead of dropping the abort and
+			// running the turn to completion.
+			this.abortRequested.add(sessionId);
+			return;
+		}
 		logger.info(`stopSession ${sessionId}`, {
 			threadId: ctx.providerThreadId ?? "(none)",
 		});
@@ -1350,16 +1411,21 @@ export class CodexAppServerManager implements SessionManager {
 		ctx.turnReject = null;
 		ctx.activeTurnId = null;
 
+		// Killing the app-server IS the abort. Fire `turn/interrupt`
+		// best-effort so codex can cancel the upstream turn, but DON'T await
+		// it — codex 0.134 can take the full 5s timeout to ACK, and gating
+		// the user-facing `aborted` on that round-trip is what made the Stop
+		// button lag. `kill()` clears this request's pending timeout.
 		if (ctx.providerThreadId && turnToInterrupt) {
-			try {
-				await ctx.server.sendRequest(
+			ctx.server
+				.sendRequest(
 					"turn/interrupt",
 					{ threadId: ctx.providerThreadId, turnId: turnToInterrupt },
 					5_000,
-				);
-			} catch {
-				// best-effort
-			}
+				)
+				.catch(() => {
+					// best-effort
+				});
 		}
 
 		ctx.server.kill();
@@ -1583,9 +1649,17 @@ export class CodexAppServerManager implements SessionManager {
 		model?: string,
 		permissionMode?: string,
 		fastMode?: boolean,
+		agentProxy?: AgentProxySettings,
 	): Promise<AppServerContext> {
+		const agentProxyKey = buildAgentProxyKey(agentProxy);
 		const existing = this.sessions.get(sessionId);
-		if (existing && !existing.server.killed) return existing;
+		if (existing && !existing.server.killed) {
+			if (existing.agentProxyKey === agentProxyKey || existing.activeTurnId) {
+				return existing;
+			}
+			existing.server.kill();
+			this.sessions.delete(sessionId);
+		}
 
 		// Forward-reference holder so the `onRetry` closure can reach the
 		// context that's constructed below — the callback only fires once
@@ -1596,6 +1670,7 @@ export class CodexAppServerManager implements SessionManager {
 		const server = new CodexAppServer({
 			binaryPath: CODEX_BIN_PATH,
 			cwd,
+			agentProxy,
 			onNotification: () => {},
 			onRequest: () => {},
 			onExit: (code, signal) => {
@@ -1695,6 +1770,7 @@ export class CodexAppServerManager implements SessionManager {
 			activeEmitter: null,
 			notificationGate: null,
 			lastSentModel: model ?? "",
+			agentProxyKey,
 			lastRetryAt: null,
 			lastRetryNotice: null,
 			subAgentTracker: new SubAgentTracker(server),
@@ -1917,6 +1993,12 @@ function parseSkillsResponse(
 	return Array.from(byName.values());
 }
 
+function buildAgentProxyKey(agentProxy?: AgentProxySettings): string {
+	if (!agentProxy) return "none";
+	if (agentProxy.mode === "system") return "system";
+	return `custom:${agentProxy.customUrl}`;
+}
+
 /**
  * Map Helmor's permissionMode to Codex's collaborationMode.
  * Returns undefined when no override is needed (i.e. default mode).
@@ -1924,12 +2006,14 @@ function parseSkillsResponse(
 function toCodexCollaborationMode(
 	permissionMode: string | undefined,
 	model: string | undefined,
+	effortLevel: string | undefined,
 ): Record<string, unknown> | undefined {
 	if (permissionMode === "plan") {
 		return {
 			mode: "plan",
 			settings: {
 				...(model ? { model } : {}),
+				...(effortLevel ? { reasoning_effort: effortLevel } : {}),
 			},
 		};
 	}
@@ -1943,6 +2027,7 @@ function toCodexCollaborationMode(
 			mode: "default",
 			settings: {
 				...(model ? { model } : {}),
+				...(effortLevel ? { reasoning_effort: effortLevel } : {}),
 			},
 		};
 	}

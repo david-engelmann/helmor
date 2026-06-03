@@ -556,4 +556,97 @@ mod tests {
         assert_eq!(source, "exit_plan_mode");
         assert_eq!(source_msg_id.as_deref(), Some("msg-42"));
     }
+
+    // ── streaming-bypass wiring: real provider event shapes ────────────
+
+    /// Mirrors the exact projection sequence the streaming bypass runs in
+    /// `agents::streaming::stream_via_sidecar` — the `event.raw` envelope
+    /// the sidecar delivers (NOT a pre-cleaned tool_input) is fed straight
+    /// into the parsers, gated the same way, and upserted with the same
+    /// `(source, source_message_id)` arguments. Guards against drift between
+    /// the real event shapes and the projection layer.
+    #[test]
+    fn streaming_bypass_projects_real_provider_event_shapes() {
+        let conn = open_test_conn();
+
+        // Codex: verbatim `turn/plan/updated` envelope from
+        // tests/fixtures/streams/codex/plan-mode.jsonl. The hook gates on
+        // `event.raw["type"] == "turn/plan/updated"` before projecting, so
+        // assert that discriminator here too.
+        let codex_raw = json!({
+            "type": "turn/plan/updated",
+            "threadId": "thread_1",
+            "turnId": "turn_1",
+            "plan": [
+                { "step": "Audit fixtures", "status": "completed" },
+                { "step": "Sanitize captured content", "status": "inProgress" },
+                { "step": "Refresh snapshots", "status": "pending" },
+            ],
+            "session_id": "session_1",
+        });
+        assert_eq!(
+            codex_raw.get("type").and_then(Value::as_str),
+            Some("turn/plan/updated"),
+            "hook gate must match the real codex event discriminator"
+        );
+        let codex_plan =
+            plan_from_codex_event(&codex_raw).expect("real codex envelope must yield a plan");
+        let wrote = upsert_session_plan(&conn, "s1", PlanSource::Codex, None, &codex_plan).unwrap();
+        assert!(wrote, "codex projection must write a row");
+
+        let (source, msg_id, plan_json): (String, Option<String>, String) = conn
+            .query_row(
+                "SELECT source, source_message_id, plan_json \
+                 FROM session_plan_state WHERE session_id = 's1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(source, "codex");
+        assert!(
+            msg_id.is_none(),
+            "codex hook passes source_message_id = None"
+        );
+        let restored: Plan = serde_json::from_str(&plan_json).unwrap();
+        assert_eq!(restored.items.len(), 3);
+        assert_eq!(restored.items[1].status, PlanItemStatus::InProgress);
+        assert_eq!(restored.current_item_id.as_deref(), Some("codex-1"));
+        assert_eq!(restored.raw_source, "codex");
+
+        // Claude: the bypass passes the full `planCaptured` envelope
+        // (`event.raw`, with `kind`/`toolUseId` siblings) straight into
+        // `plan_from_exit_plan_mode`, and forwards the persisted message id
+        // as `source_message_id`.
+        let exit_raw = json!({
+            "kind": "planCaptured",
+            "toolUseId": "toolu_abc",
+            "plan": "- Inspect backend\n- Implement projection",
+        });
+        let exit_plan = plan_from_exit_plan_mode(&exit_raw)
+            .expect("real planCaptured envelope must yield a plan");
+        let wrote = upsert_session_plan(
+            &conn,
+            "s2",
+            PlanSource::ExitPlanMode,
+            Some("msg-1"),
+            &exit_plan,
+        )
+        .unwrap();
+        assert!(wrote, "exit_plan_mode projection must write a row");
+
+        let (source, msg_id, plan_json): (String, Option<String>, String) = conn
+            .query_row(
+                "SELECT source, source_message_id, plan_json \
+                 FROM session_plan_state WHERE session_id = 's2'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(source, "exit_plan_mode");
+        assert_eq!(msg_id.as_deref(), Some("msg-1"));
+        let restored: Plan = serde_json::from_str(&plan_json).unwrap();
+        assert_eq!(restored.items.len(), 2);
+        assert_eq!(restored.raw_source, "exit_plan_mode");
+        assert!(restored.raw_text.is_some());
+    }
 }

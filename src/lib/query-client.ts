@@ -29,7 +29,7 @@ import {
 	listRepositories,
 	listSlashCommands,
 	listWorkspaceCandidateDirectories,
-	listWorkspaceChangesWithContent,
+	listWorkspaceChanges,
 	listWorkspaceFiles,
 	listWorkspaceLinkedDirectories,
 	loadAgentModelSections,
@@ -89,8 +89,8 @@ export const helmorQueryKeys = {
 		] as const,
 	sessionMessages: (sessionId: string) =>
 		["sessionMessages", sessionId] as const,
-	workspaceChanges: (workspaceRootPath: string) =>
-		["workspaceChanges", workspaceRootPath] as const,
+	workspaceChanges: (workspaceRootPath: string, workspaceId?: string | null) =>
+		["workspaceChanges", workspaceRootPath, workspaceId ?? ""] as const,
 	workspaceFiles: (workspaceRootPath: string) =>
 		["workspaceFiles", workspaceRootPath] as const,
 	workspaceChangeRequest: (workspaceId: string) =>
@@ -149,6 +149,15 @@ export const helmorQueryKeys = {
 	workspaceCandidateDirectories: (excludeWorkspaceId: string | null) =>
 		["workspaceCandidateDirectories", excludeWorkspaceId ?? ""] as const,
 	activeStreams: ["activeStreams"] as const,
+	slackWorkspaces: ["slackWorkspaces"] as const,
+	slackInbox: (teamId: string) => ["slackInbox", teamId] as const,
+	slackSearch: (teamId: string, query: string, sort: string) =>
+		["slackSearch", teamId, query, sort] as const,
+	slackThread: (teamId: string, channelId: string, anchorTs: string) =>
+		["slackThread", teamId, channelId, anchorTs] as const,
+	slackEmojiMap: (teamId: string) => ["slackEmojiMap", teamId] as const,
+	triageConfig: ["triage", "config"] as const,
+	triageActiveStatus: ["triage", "activeStatus"] as const,
 };
 
 /** Persistence is opt-in per `queryOptions` via `meta: { persist: true }`.
@@ -924,10 +933,13 @@ export function workspaceForgeRefetchInterval(
 		: false;
 }
 
-export function workspaceChangesQueryOptions(workspaceRootPath: string) {
+export function workspaceChangesQueryOptions(
+	workspaceRootPath: string,
+	workspaceId?: string | null,
+) {
 	return queryOptions({
-		queryKey: helmorQueryKeys.workspaceChanges(workspaceRootPath),
-		queryFn: () => listWorkspaceChangesWithContent(workspaceRootPath),
+		queryKey: helmorQueryKeys.workspaceChanges(workspaceRootPath, workspaceId),
+		queryFn: () => listWorkspaceChanges(workspaceRootPath, workspaceId),
 		staleTime: CHANGES_STALE_TIME,
 		refetchOnWindowFocus: true,
 		refetchInterval: CHANGES_REFETCH_INTERVAL,
