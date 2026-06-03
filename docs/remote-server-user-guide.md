@@ -13,9 +13,14 @@ This guide covers everything an end user needs:
 - [Adding a remote server](#adding-a-remote-server)
 - [Binding a workspace to a remote](#binding-a-workspace-to-a-remote)
 - [What happens when the network drops](#what-happens-when-the-network-drops)
+- [Using the `helmor` CLI with remote-bound workspaces](#using-the-helmor-cli-with-remote-bound-workspaces)
 - [Troubleshooting](#troubleshooting)
 - [Security model](#security-model)
 - [Uninstalling](#uninstalling)
+
+For symptom-driven recovery steps when something specific breaks
+(SSH drops mid-stream, custom-provider unreachable, daemon won't
+come back, etc.) see [`remote-runner-failure-modes.md`](./remote-runner-failure-modes.md).
 
 For implementation detail see
 [`remote-server-architecture.md`](./remote-server-architecture.md).
@@ -201,12 +206,17 @@ and run on your laptop, unchanged.
 Helmor's resilience story leans on the daemon's event journal:
 
 1. **Heartbeat loss → Degraded chip.** The status bar shows the
-   workspace is offline; agents continue running on the remote.
+   workspace is offline; agents continue running on the remote. The
+   chat composer's **Send button is disabled** while the bound
+   runtime is degraded (the editor / toolbar stay live so you can
+   keep drafting); this stops prompts from racing against the
+   dropped SSH socket and silently disappearing.
 2. **Sustained loss → auto-reconnect kicks in.** Exponential backoff
    from 5s to 5min (with jitter).
 3. **On reconnect, the chat resumes automatically.** No user action
    needed. The daemon flushes journaled events the desktop missed,
-   then the live tail keeps flowing.
+   then the live tail keeps flowing. The composer's Send button
+   re-enables.
 4. **If the daemon was restarted mid-outage**, surviving on-disk
    journals are loaded as **endedReplayOnly** sessions. The desktop
    surfaces them but the auto-attach loop skips them — you can still
@@ -227,11 +237,46 @@ persistently:
   sidecar; the banner exposes the recent restart timestamps and
   points at the daemon log path for triage.
 - **Version drift banner**: appears when the daemon's
-  `helmor-server` binary is older than the desktop's expected
-  protocol-matched version (typically after the desktop upgrades
-  but the remote install didn't auto-renew). One-click
-  **Reinstall daemon** force-installs the matching binary and
-  reconnects.
+  `helmor-server` binary is older than the desktop expects. The
+  install gate now treats *any* version drift as reinstall-worthy
+  (not only protocol mismatch), so a behavior-only daemon fix —
+  PR #28's `result`-vs-`end` event handling, for example —
+  propagates automatically on the next connect after a desktop
+  upgrade. One-click **Reinstall daemon** force-installs the
+  matching binary if the auto path is somehow skipping.
+
+## Using the `helmor` CLI with remote-bound workspaces
+
+The `helmor` CLI runs as its own process — it doesn't carry the
+desktop's registry of remote runtimes. To keep forge ops
+(`helmor github pr show / status / merge / close`) routed through
+the workspace's bound runtime, the CLI dispatches over the same
+Unix socket the desktop already uses for UI events:
+
+- **Desktop running**: the CLI sends the op over the socket. The
+  desktop runs it through the workspace's bound runtime — same code
+  path as the GUI's PR buttons — and ships the typed result back.
+  No warning printed; the call lands on the container's `gh` and
+  uses the container's auth.
+- **Desktop NOT running**: the CLI falls back to the laptop's `gh`
+  with a one-line stderr notice: *"workspace is bound to remote
+  runtime `<name>` and the Helmor desktop isn't running — falling
+  back to the laptop's `gh`. Open the desktop app to route forge
+  ops through the bound runtime."* The laptop's `gh` is
+  authenticated against the laptop's account and operates on the
+  laptop's checkout, so PR ops against a remote-only branch will
+  typically fail or return stale data.
+
+Other CLI surfaces (`helmor session`, `helmor files`, `helmor send`,
+`helmor scripts`) talk to the local DB and aren't affected by
+remote bindings — the workspace metadata lives on the desktop
+regardless of where its files do.
+
+> [!NOTE]
+> GitLab forge ops are routed through the same `ForgeRunner`
+> plumbing as GitHub; the integration is code-complete but hasn't
+> been end-to-end validated against a real GitLab instance — please
+> open an issue if you hit something surprising.
 
 ## Troubleshooting
 

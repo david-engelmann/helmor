@@ -1,0 +1,20 @@
+{
+	"items": [
+		{
+			"text": "Tool results now auto-expand in the chat panel when they're short, so the agent's `ls`, `pwd`, file reads, and command output are visible at a glance. Long results stay collapsed (the chevron still opens them)."
+		},
+		{
+			"text": "If the workspace's bound remote runtime drops, the composer's Send button is now disabled until the connection comes back — prompts can't silently vanish into the closed SSH socket. The editor and toolbar stay live so your draft survives the reconnect.",
+			"action": {
+				"label": "Open Remote Servers",
+				"value": { "type": "openSettings", "section": "remote-servers" }
+			}
+		},
+		{
+			"text": "Helmor now auto-reinstalls the remote `helmor-server` daemon when its version falls behind the desktop's — not only on protocol mismatch. Behavior fixes (like the daemon `end`-event handling) propagate on next connect with no manual reinstall."
+		},
+		{
+			"text": "`helmor github pr {show,status,merge,close}` from the CLI now routes through the running desktop's IPC when the workspace is bound to a remote, so the call uses the container's `gh` and account — not the laptop's. Desktop down? It falls back to local with a one-line notice."
+		}
+	]
+}
