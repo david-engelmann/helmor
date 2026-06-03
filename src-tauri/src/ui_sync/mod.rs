@@ -1,9 +1,13 @@
+mod cli_rpc;
+mod cli_rpc_dispatch;
 mod events;
 mod manager;
 mod socket;
 
 use tauri::{ipc::Channel, AppHandle, Manager, Runtime};
 
+pub use cli_rpc::{CliRpcEnvelope, CliRpcRequest, CliRpcResponse};
+pub use cli_rpc_dispatch::dispatch_cli_rpc;
 pub use events::{UiMutationEnvelope, UiMutationEvent};
 pub use manager::UiSyncManager;
 pub use socket::{is_listener_running, notify_running_app, socket_path, start_listener};

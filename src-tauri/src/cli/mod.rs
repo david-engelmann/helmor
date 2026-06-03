@@ -16,6 +16,7 @@ mod conductor;
 mod data;
 mod files;
 mod github;
+mod ipc_client;
 mod output;
 mod refs;
 mod repo;

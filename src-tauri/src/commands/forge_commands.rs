@@ -19,7 +19,7 @@ use std::sync::Arc;
 /// Failure to load a binding (DB error, JSON parse failure, dropped
 /// runtime) is logged and degraded to local — a flaky bindings file
 /// shouldn't stop the user from polling PR status.
-fn forge_runner_for_workspace(
+pub(crate) fn forge_runner_for_workspace(
     workspace_id: &str,
     registry: &Arc<RuntimeRegistry>,
     bindings: &Arc<WorkspaceRuntimeBindings>,

@@ -4,7 +4,10 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use tauri::{AppHandle, Manager, Runtime};
 
-use super::{events::UiMutationEnvelope, manager::UiSyncManager};
+use super::{
+    cli_rpc::CliRpcEnvelope, cli_rpc_dispatch::dispatch_cli_rpc, events::UiMutationEnvelope,
+    manager::UiSyncManager,
+};
 
 const SOCKET_FILENAME: &str = "ui-sync.sock";
 
@@ -40,21 +43,52 @@ pub fn start_listener<R: Runtime>(app: AppHandle<R>) -> Result<()> {
                         reader.read_line(&mut line)
                     };
 
-                    let response = match read_result {
-                        Ok(0) => br#"{"ok":false,"error":"empty request"}"#.as_slice(),
-                        Ok(_) => match serde_json::from_str::<UiMutationEnvelope>(&line) {
-                            Ok(envelope) if envelope.version == UiMutationEnvelope::VERSION => {
-                                let manager = app.state::<UiSyncManager>();
-                                manager.publish(envelope.event);
-                                br#"{"ok":true}"#.as_slice()
+                    // Two envelope shapes share this socket:
+                    //   - UiMutationEnvelope (notify_running_app): the
+                    //     pre-existing fire-and-forget event channel.
+                    //     Distinguished by its `version` field.
+                    //   - CliRpcEnvelope (CLI → desktop forge RPC):
+                    //     a request/response RPC for `helmor github pr ...`
+                    //     when the workspace is bound to a remote.
+                    //     Distinguished by its `cliRpcVersion` field.
+                    //
+                    // Try UI mutation first since it's higher-volume; fall
+                    // through to CLI RPC; only if both shape-checks fail
+                    // do we emit `invalid payload`.
+                    let response_bytes: Vec<u8> = match read_result {
+                        Ok(0) => br#"{"ok":false,"error":"empty request"}"#.to_vec(),
+                        Ok(_) => {
+                            if let Ok(envelope) = serde_json::from_str::<UiMutationEnvelope>(&line)
+                            {
+                                if envelope.version == UiMutationEnvelope::VERSION {
+                                    let manager = app.state::<UiSyncManager>();
+                                    manager.publish(envelope.event);
+                                    br#"{"ok":true}"#.to_vec()
+                                } else {
+                                    br#"{"ok":false,"error":"unsupported version"}"#.to_vec()
+                                }
+                            } else if let Ok(envelope) =
+                                serde_json::from_str::<CliRpcEnvelope>(&line)
+                            {
+                                if envelope.cli_rpc_version == CliRpcEnvelope::VERSION {
+                                    let response = dispatch_cli_rpc(&app, envelope.request);
+                                    serde_json::to_vec(&response).unwrap_or_else(|err| {
+                                        format!(
+                                            r#"{{"ok":false,"error":"serialize response: {err}"}}"#
+                                        )
+                                        .into_bytes()
+                                    })
+                                } else {
+                                    br#"{"ok":false,"error":"unsupported cliRpcVersion"}"#.to_vec()
+                                }
+                            } else {
+                                br#"{"ok":false,"error":"invalid payload"}"#.to_vec()
                             }
-                            Ok(_) => br#"{"ok":false,"error":"unsupported version"}"#.as_slice(),
-                            Err(_) => br#"{"ok":false,"error":"invalid payload"}"#.as_slice(),
-                        },
-                        Err(_) => br#"{"ok":false,"error":"read failed"}"#.as_slice(),
+                        }
+                        Err(_) => br#"{"ok":false,"error":"read failed"}"#.to_vec(),
                     };
 
-                    let _ = stream.write_all(response);
+                    let _ = stream.write_all(&response_bytes);
                     let _ = stream.write_all(b"\n");
                     let _ = stream.flush();
                 }
