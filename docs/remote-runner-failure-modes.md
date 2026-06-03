@@ -100,17 +100,24 @@ The container has the daemon and (probably) the sidecar, but is missing one of:
 
 **Why**
 
-`daemon.log` and `logs/sidecar.jsonl` aren't rotated yet — both grow unbounded. A noisy turn (e.g. an agent paging through a large repo) plus a long-running daemon can fill terabytes over weeks. Tracked as Phase 5 of the production-ready plan.
+Two files live under `$HOME/.helmor/server/`:
+- `daemon.log` — JSONL tracing output. **Rotated** at 10 MB into `daemon.log.1`; total disk use ≤ 20 MB per daemon, regardless of uptime.
+- `daemon-stdio.log` — raw stdout/stderr from the daemon process (panics, dynamic-loader diagnostics, stray `println!`s). Tiny in normal operation; **truncated at 5 MB on daemon restart**.
+
+And under `$HOME/.helmor/server/logs/`:
+- `sidecar.jsonl` + `sidecar.jsonl.1` — the sidecar's own size-ring, capped by the same shape.
+
+So unbounded growth is the *exceptional* case — usually it means the daemon hasn't restarted in a long time AND the stdio log is full of panic spam. The Phase 1.2 dedupe also cut a long-standing source of `daemon.log` noise: stale "workspace root missing" warnings used to fire ~6/min before that landed.
 
 **Recovery**
 
-1. From the desktop: **Settings → Remote Servers → Reinstall** restarts the daemon cleanly but **does not truncate the existing log**.
-2. To truncate the log without restarting:
+1. **Settings → Remote Servers → Reinstall** bounces the daemon. On the next start, `daemon-stdio.log` gets the size-prune treatment automatically; the rotated `daemon.log` is already capped.
+2. To clear the active log without restarting:
    ```sh
-   ssh <host> 'cd $HOME/.helmor/server && truncate -s 0 daemon.log logs/sidecar.jsonl'
+   ssh <host> 'cd $HOME/.helmor/server && truncate -s 0 daemon.log daemon-stdio.log logs/sidecar.jsonl'
    ```
-   `truncate -s 0` on a file the daemon already opened works because the open file descriptor's offset is independent of the file's length — the daemon keeps writing at the next offset (leaving NUL padding up to that point), and the next time you tail the file you see only the new content. Closer-to-the-bone alternative: stop the daemon, delete + recreate the files, restart.
-3. The right durable fix is rotation. Until that lands, set a cron / systemd-timer on the remote that truncates the logs weekly.
+   `truncate -s 0` on a file the daemon already opened works because the open file descriptor's offset is independent of the file's length — the daemon keeps writing at the next offset (leaving NUL padding up to that point), and the next time you tail the file you see only the new content.
+3. If a single file is genuinely growing without bound after these fixes, something is logging at WARN+ on every tick — file an issue with the affected file path + the last 100 lines.
 
 ---
 
@@ -139,14 +146,15 @@ Several causes pile up here, in order of frequency:
 
 ## Where to find logs
 
-| Process | Path |
-|---|---|
-| Desktop's own log | `~/Library/Application Support/helmor/logs/rust.jsonl` (release) or `~/helmor-dev/logs/rust.jsonl` (debug) |
-| Desktop's sidecar log | same dir, `sidecar.jsonl` |
-| Remote daemon | `<remote>:$HOME/.helmor/server/daemon.log` |
-| Remote sidecar | `<remote>:$HOME/.helmor/server/logs/sidecar.jsonl` |
+| Process | Path | Rotation |
+|---|---|---|
+| Desktop tracing | `~/Library/Application Support/helmor/logs/rust.jsonl` (release) or `~/helmor-dev/logs/rust.jsonl` (debug) | size-ring, 10 MB + .1 |
+| Desktop sidecar | same dir, `sidecar.jsonl` | size-ring, 10 MB + .1 |
+| Remote daemon (tracing) | `<remote>:$HOME/.helmor/server/daemon.log` | size-ring, 10 MB + .1 |
+| Remote daemon (stdio/panics) | `<remote>:$HOME/.helmor/server/daemon-stdio.log` | truncated on restart if > 5 MB |
+| Remote sidecar | `<remote>:$HOME/.helmor/server/logs/sidecar.jsonl` | size-ring, 10 MB + .1 |
 
-`tail -f` against any of them is the fastest way to see what a stalled connect / chat is doing. The daemon log emits a `remote: initialize handshake accepted` line every time the desktop reconnects — useful for confirming a reconnect actually landed on the remote.
+`tail -f` against any of them is the fastest way to see what a stalled connect / chat is doing. The daemon log emits a `remote: initialize handshake accepted` line every time the desktop reconnects — useful for confirming a reconnect actually landed on the remote. Crash signatures from the daemon (Rust panics, segfaults from the dynamic loader) show up in `daemon-stdio.log`, not the tracing log.
 
 ---
 

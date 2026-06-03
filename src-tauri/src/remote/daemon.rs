@@ -56,7 +56,27 @@ use super::terminal::RemoteTerminalState;
 const DEFAULT_DAEMON_DIR: &str = ".helmor/server";
 const SOCKET_FILE: &str = "sock";
 const PID_FILE: &str = "daemon.pid";
+/// Active rotated tracing log. `daemon.log.1` is the previous segment;
+/// the SizeRingAppender keeps total disk use ≤ `2 × DAEMON_LOG_MAX_BYTES`.
 const LOG_FILE: &str = "daemon.log";
+
+/// Companion stdio sink: stdout / stderr from the daemon process are
+/// dup2'd here so panics, stray `println!`s, and the dynamic loader's
+/// "missing GTK lib" diagnostics survive in a place the operator can
+/// `tail`. Kept separate from `daemon.log` because the rotating
+/// appender writes through its own File handle; sharing the same path
+/// would leave the dup2'd fds writing to a renamed inode after the
+/// first rotation. Stays small in normal operation (only panic
+/// material reaches it), so no rotation needed — see
+/// [`prune_stdio_log_if_oversized`] for the startup safety cap.
+const STDIO_LOG_FILE: &str = "daemon-stdio.log";
+
+/// Hard cap on `daemon-stdio.log`. Anything past this on daemon start
+/// gets the file truncated — if stdio is producing > 5 MB of output
+/// that's already a "pile of panics" situation the operator should
+/// investigate via the previous segment, but we don't let it grow
+/// unbounded across restarts.
+const STDIO_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
 
 /// How long `ensure_daemon` waits after forking before giving up
 /// on the new daemon binding its socket. 3 seconds is comfortably
@@ -188,8 +208,9 @@ pub fn run_daemon() -> Result<()> {
     let dir = default_daemon_dir()?;
     std::fs::create_dir_all(&dir)?;
 
-    let log_path = default_log_path()?;
-    redirect_stdio_to_log(&log_path)?;
+    let stdio_log_path = dir.join(STDIO_LOG_FILE);
+    prune_stdio_log_if_oversized(&stdio_log_path);
+    redirect_stdio_to_log(&stdio_log_path)?;
     init_daemon_logging();
 
     let pid_path = default_pid_path()?;
@@ -464,6 +485,22 @@ fn daemonize() -> Result<()> {
     Ok(())
 }
 
+/// If `daemon-stdio.log` has grown past [`STDIO_LOG_MAX_BYTES`], rename
+/// it to `<file>.1` (replacing any prior backup) so the dup2 in
+/// `redirect_stdio_to_log` opens a fresh file. Best-effort: a rename
+/// failure leaves the file in place and the daemon keeps appending.
+fn prune_stdio_log_if_oversized(stdio_log_path: &Path) {
+    let Ok(meta) = std::fs::metadata(stdio_log_path) else {
+        return;
+    };
+    if meta.len() <= STDIO_LOG_MAX_BYTES {
+        return;
+    }
+    let backup = stdio_log_path.with_extension("log.1");
+    let _ = std::fs::remove_file(&backup);
+    let _ = std::fs::rename(stdio_log_path, &backup);
+}
+
 /// Open the log file in append mode and dup it over fd 1 + 2 so any
 /// stray println / panic message lands there instead of vanishing.
 /// stdin is redirected to /dev/null.
@@ -501,13 +538,45 @@ fn redirect_stdio_to_log(log_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Per-file size cap for the daemon's rotated JSONL log. Two files
+/// (`daemon.log` + `daemon.log.1`) → 20 MB total worst-case. Older
+/// content goes to `.1` on each rotation and is overwritten on the
+/// next one.
+const DAEMON_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
+
 fn init_daemon_logging() {
-    use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::{
+        fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer,
+    };
     let filter = EnvFilter::try_from_env("HELMOR_SERVER_LOG").unwrap_or_else(|_| "info".into());
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .json()
-        .try_init();
+
+    // Try to set up the rotating appender targeting daemon.log. On
+    // any failure (logs dir not writable, etc.) fall back to plain
+    // stderr through the dup2 redirect already in place — losing
+    // rotation is fine; losing logs entirely is not.
+    let appender = (|| {
+        let dir = default_daemon_dir().ok()?;
+        crate::logging::SizeRingAppender::new(&dir, LOG_FILE, DAEMON_LOG_MAX_BYTES).ok()
+    })();
+
+    if let Some(appender) = appender {
+        let _ = tracing_subscriber::registry()
+            .with(
+                fmt::layer()
+                    .json()
+                    .flatten_event(true)
+                    .with_current_span(false)
+                    .with_span_list(false)
+                    .with_writer(appender)
+                    .with_filter(filter),
+            )
+            .try_init();
+    } else {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .json()
+            .try_init();
+    }
 }
 
 fn write_pid_file(path: &Path) -> std::io::Result<()> {
@@ -551,6 +620,55 @@ pub fn is_socket_dead_error(err: &std::io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prune_stdio_log_rotates_when_oversized() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daemon-stdio.log");
+        // Write `MAX + 1` bytes — the prune should fire.
+        std::fs::write(&path, vec![b'A'; (STDIO_LOG_MAX_BYTES + 1) as usize]).unwrap();
+        prune_stdio_log_if_oversized(&path);
+
+        assert!(!path.exists(), "active stdio file should be moved aside");
+        let backup = dir.path().join("daemon-stdio.log.1");
+        assert!(backup.exists(), "previous content lives at .log.1");
+        let size = std::fs::metadata(&backup).unwrap().len();
+        assert_eq!(size, STDIO_LOG_MAX_BYTES + 1);
+    }
+
+    #[test]
+    fn prune_stdio_log_is_noop_when_under_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daemon-stdio.log");
+        std::fs::write(&path, b"small\n").unwrap();
+        prune_stdio_log_if_oversized(&path);
+        assert!(path.exists(), "small file stays put");
+        assert_eq!(std::fs::read(&path).unwrap(), b"small\n");
+    }
+
+    #[test]
+    fn prune_stdio_log_handles_missing_file_gracefully() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("never-existed.log");
+        // Must not panic / error — daemon startup runs this before
+        // the first stdio write, so the file may not exist yet.
+        prune_stdio_log_if_oversized(&path);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn prune_stdio_log_overwrites_existing_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daemon-stdio.log");
+        let backup = dir.path().join("daemon-stdio.log.1");
+        std::fs::write(&backup, b"old backup").unwrap();
+        std::fs::write(&path, vec![b'X'; (STDIO_LOG_MAX_BYTES + 1) as usize]).unwrap();
+        prune_stdio_log_if_oversized(&path);
+        // Backup now holds the just-rotated active file, not the old one.
+        let body = std::fs::read(&backup).unwrap();
+        assert_eq!(body.len(), (STDIO_LOG_MAX_BYTES + 1) as usize);
+        assert!(body.iter().all(|&b| b == b'X'));
+    }
 
     #[test]
     fn default_paths_resolve_under_home() {

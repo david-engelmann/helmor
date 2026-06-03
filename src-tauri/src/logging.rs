@@ -97,7 +97,11 @@ struct AppenderState {
 }
 
 impl SizeRingAppender {
-    fn new(logs_dir: &Path, name: &str, max_bytes: u64) -> Result<Self> {
+    /// Open / create the active file in `logs_dir/name`. Rotates to
+    /// `<name>.1` when the active file would exceed `max_bytes` on the
+    /// next write. Picks up an existing file's current size so a
+    /// daemon restart doesn't reset the rotation budget.
+    pub fn new(logs_dir: &Path, name: &str, max_bytes: u64) -> Result<Self> {
         let primary = logs_dir.join(name);
         let backup = logs_dir.join(format!("{name}.1"));
         let file = OpenOptions::new()
