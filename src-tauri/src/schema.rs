@@ -717,6 +717,17 @@ fn run_migrations(connection: &Connection) -> Result<()> {
             .context("Failed to add workspaces.port_count column")?;
     }
 
+    // Runtime process registry. Tracks every PTY-backed script /
+    // terminal Helmor spawns so a crash recovery sweep on next launch
+    // can detect rows whose process is still alive and report them.
+    // `ended_at` IS NULL while a process is live; the post-exit code
+    // path in `workspace::scripts::run_script_with_shell` stamps it
+    // on natural completion / kill / graceful quit. Idempotent
+    // CREATE TABLE so legacy DBs pick it up on next startup.
+    connection
+        .execute_batch(RUNTIME_PROCESSES_DDL)
+        .context("Failed to create runtime_processes table")?;
+
     // 'from_branch' = fork a new branch; 'use_branch' = attach as-is.
     if has_table(connection, "workspaces") && !has_column(connection, "workspaces", "branch_intent")
     {
@@ -775,6 +786,22 @@ fn run_migrations(connection: &Connection) -> Result<()> {
 
     Ok(())
 }
+
+const RUNTIME_PROCESSES_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS runtime_processes (
+    id TEXT PRIMARY KEY,
+    repo_id TEXT NOT NULL,
+    workspace_id TEXT,
+    script_type TEXT NOT NULL,
+    pid INTEGER NOT NULL,
+    pgid INTEGER NOT NULL,
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    ended_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_runtime_processes_ended_at
+    ON runtime_processes(ended_at);
+"#;
 
 // Idempotent `ALTER TABLE ... ADD COLUMN`; no-op when the column already exists.
 fn add_column_if_missing(
@@ -1020,6 +1047,17 @@ CREATE TABLE IF NOT EXISTS session_messages (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS runtime_processes (
+    id TEXT PRIMARY KEY,
+    repo_id TEXT NOT NULL,
+    workspace_id TEXT,
+    script_type TEXT NOT NULL,
+    pid INTEGER NOT NULL,
+    pgid INTEGER NOT NULL,
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    ended_at TEXT
+);
+
 -- Connected Slack workspaces (one row per workspace the user has
 -- imported). Credentials (xoxc + xoxd) live in the macOS Keychain via
 -- `crate::slack::credentials`, never here. This table is just
@@ -1067,6 +1105,7 @@ CREATE TABLE IF NOT EXISTS triage_fetch_cursor (
 CREATE INDEX IF NOT EXISTS idx_session_messages_sent_at ON session_messages(session_id, sent_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_workspace_id ON sessions(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_workspaces_repository_id ON workspaces(repository_id);
+CREATE INDEX IF NOT EXISTS idx_runtime_processes_ended_at ON runtime_processes(ended_at);
 CREATE INDEX IF NOT EXISTS idx_triage_candidate_open ON triage_candidate(source_time DESC) WHERE decision IS NULL;
 CREATE INDEX IF NOT EXISTS idx_triage_candidate_source ON triage_candidate(source, source_time DESC);
 -- idx_workspaces_kind + idx_workspaces_triage_source are created in
