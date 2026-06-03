@@ -101,11 +101,18 @@ RUN apt-get update \
     && mkdir -p /var/run/sshd
 
 # Deterministic sshd: key-only auth (matches the desktop's
-# BatchMode=yes), no root login.
+# BatchMode=yes), no root login. StrictModes off so the bind-mounted
+# `authorized_keys` can come from a host uid that doesn't map to the
+# in-container `e2e` uid (1000) — happens whenever a CI runner is
+# uid 1001+ and the mount preserves host ownership (native Linux
+# Docker; Docker Desktop's macOS layer remaps to root and dodges
+# this). This is a test-only image — no real-world hardening
+# implication.
 RUN sed -i \
         -e 's|#PasswordAuthentication yes|PasswordAuthentication no|' \
         -e 's|#PermitRootLogin prohibit-password|PermitRootLogin no|' \
         -e 's|#PermitUserEnvironment no|PermitUserEnvironment yes|' \
+        -e 's|#StrictModes yes|StrictModes no|' \
         /etc/ssh/sshd_config
 
 # Test user + managed daemon dir. The host-side test writes its
