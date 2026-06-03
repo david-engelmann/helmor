@@ -312,10 +312,7 @@ fn build_api_retry_notice(parsed: &Value, msg_id: &str) -> MessagePart {
         .get("retry_delay_ms")
         .and_then(Value::as_i64)
         .unwrap_or(0);
-    let error = parsed
-        .get("error")
-        .and_then(Value::as_str)
-        .unwrap_or("server error");
+    let error = parsed.get("error").and_then(Value::as_str).unwrap_or("");
     let status = parsed.get("error_status").and_then(Value::as_i64);
 
     let mut body = format!("Retry {attempt}/{max}");
@@ -325,7 +322,19 @@ fn build_api_retry_notice(parsed: &Value, msg_id: &str) -> MessagePart {
     if let Some(s) = status {
         body.push_str(&format!(" · HTTP {s}"));
     }
-    body.push_str(&format!(" · {error}"));
+    // Only append the error string when it actually adds information.
+    // The SDK frequently emits `"unknown"` or `"server error"` as a
+    // placeholder when the underlying failure didn't carry a useful
+    // reason; appending those produces "Retry 5/10 · unknown" which
+    // reads as noise to operators and obscures the (often more useful)
+    // HTTP status or delay we already showed. Suppress those defaults
+    // and keep real strings (e.g. "ECONNREFUSED", "fetch failed").
+    let trimmed = error.trim();
+    let is_placeholder =
+        trimmed.is_empty() || trimmed.eq_ignore_ascii_case("unknown") || trimmed == "server error";
+    if !is_placeholder {
+        body.push_str(&format!(" · {trimmed}"));
+    }
 
     MessagePart::SystemNotice {
         id: notice_part_id(msg_id),
@@ -474,4 +483,109 @@ pub(super) fn format_count(value: i64) -> String {
         result.push(ch);
     }
     result.chars().rev().collect()
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn body_of(part: MessagePart) -> String {
+        match part {
+            MessagePart::SystemNotice { body, .. } => body.unwrap_or_default(),
+            other => panic!("expected SystemNotice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_api_retry_notice_includes_meaningful_error_strings() {
+        let part = build_api_retry_notice(
+            &json!({
+                "attempt": 3,
+                "max_retries": 10,
+                "retry_delay_ms": 1500,
+                "error_status": 429,
+                "error": "rate_limit",
+            }),
+            "msg-1",
+        );
+        let body = body_of(part);
+        assert!(body.contains("Retry 3/10"), "got: {body}");
+        assert!(body.contains("waiting 1.5s"), "got: {body}");
+        assert!(body.contains("HTTP 429"), "got: {body}");
+        assert!(
+            body.contains("rate_limit"),
+            "rate_limit is diagnostic; should render: {body}",
+        );
+    }
+
+    #[test]
+    fn build_api_retry_notice_suppresses_unknown_placeholder() {
+        // The SDK emits `error: "unknown"` when the transient failure
+        // didn't carry a structured reason — appending it produces
+        // "Retry 5/10 · unknown" which reads as noise and obscures the
+        // (often more useful) HTTP status or delay.
+        let part = build_api_retry_notice(
+            &json!({
+                "attempt": 5,
+                "max_retries": 10,
+                "retry_delay_ms": 2000,
+                "error": "unknown",
+            }),
+            "msg-1",
+        );
+        let body = body_of(part);
+        assert!(body.contains("Retry 5/10"), "got: {body}");
+        assert!(body.contains("waiting 2.0s"), "got: {body}");
+        assert!(
+            !body.to_lowercase().contains("unknown"),
+            "'unknown' placeholder should be suppressed; got: {body}",
+        );
+    }
+
+    #[test]
+    fn build_api_retry_notice_suppresses_empty_and_legacy_server_error_placeholder() {
+        for placeholder in ["", "  ", "server error"] {
+            let part = build_api_retry_notice(
+                &json!({
+                    "attempt": 1,
+                    "max_retries": 5,
+                    "error": placeholder,
+                }),
+                "msg-1",
+            );
+            let body = body_of(part);
+            assert!(
+                !body.ends_with(" · "),
+                "{placeholder:?} should not produce a dangling separator: {body}",
+            );
+            assert!(
+                !body.contains("server error"),
+                "{placeholder:?} placeholder should not render: {body}",
+            );
+        }
+    }
+
+    #[test]
+    fn build_api_retry_notice_renders_unstructured_transport_errors() {
+        // ECONNREFUSED on a custom LM Studio URL: no HTTP status, but
+        // the error string itself is diagnostic — the user wants to
+        // see it during the retry loop, not only at the terminal
+        // "API Error: ..." message minutes later.
+        let part = build_api_retry_notice(
+            &json!({
+                "attempt": 2,
+                "max_retries": 10,
+                "retry_delay_ms": 1000,
+                "error": "ECONNREFUSED",
+            }),
+            "msg-1",
+        );
+        let body = body_of(part);
+        assert!(body.contains("Retry 2/10"), "got: {body}");
+        assert!(
+            body.contains("ECONNREFUSED"),
+            "real transport errors stay visible: {body}",
+        );
+    }
 }
