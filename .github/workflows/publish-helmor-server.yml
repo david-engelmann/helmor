@@ -173,6 +173,11 @@ jobs:
 
       - name: Build
         working-directory: src-tauri
+        env:
+          # Same workaround as remote-server-e2e — the runner image
+          # leaks `RUSTC_WRAPPER=sccache` but `sccache` isn't on
+          # `$PATH`, so cargo blows up with `No such file or directory`.
+          RUSTC_WRAPPER: ""
         run: cargo build --release --bin helmor-server --target ${{ matrix.target }}
 
       - name: Smoke test binary

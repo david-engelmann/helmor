@@ -106,4 +106,10 @@ jobs:
           # Target the leg matching this runner's arch explicitly so
           # the test doesn't have to infer it.
           HELMOR_E2E_DOCKER_SERVICE: ${{ matrix.service }}
+          # Clear `RUSTC_WRAPPER` for this step — the runner image
+          # leaks `RUSTC_WRAPPER=sccache` into the env but doesn't
+          # actually have `sccache` on `$PATH`, so cargo blows up with
+          # `No such file or directory` before any test runs. Matches
+          # the local-dev workaround documented in CLAUDE.md.
+          RUSTC_WRAPPER: ""
         run: cargo test --test remote_docker_e2e -- --nocapture --test-threads=1
