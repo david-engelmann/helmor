@@ -71,3 +71,139 @@ pub fn dispatch_via_ipc(request: CliRpcRequest) -> Result<Option<CliRpcResponse>
         Ok(None)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data_dir::lock_test_env;
+    use crate::ui_sync::CliRpcResponse;
+    use serde_json::json;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    use std::thread;
+
+    /// Stand up a one-shot mock listener at the desktop socket path
+    /// and dispatch a real `CliRpcRequest` through it. Proves the
+    /// envelope round-trips intact over the wire — request shape +
+    /// response shape stay in sync between client and server.
+    ///
+    /// This is the integration test the gap audit flagged: the
+    /// per-shape unit tests on `cli_rpc.rs` cover JSON round-trip,
+    /// but only this exercise actually runs bytes across a Unix
+    /// socket the way the production CLI would.
+    #[test]
+    fn dispatch_via_ipc_round_trips_envelope_over_unix_socket() {
+        let _guard = lock_test_env();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("HELMOR_DATA_DIR", dir.path());
+        crate::data_dir::ensure_directory_structure().unwrap();
+
+        let socket = crate::ui_sync::socket_path().unwrap();
+        // The listener mock: accept one connection, read one line,
+        // parse as a CliRpcEnvelope, write back a canned response.
+        let listener = UnixListener::bind(&socket).unwrap();
+        let captured_request: std::sync::Arc<std::sync::Mutex<Option<CliRpcRequest>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let captured_clone = std::sync::Arc::clone(&captured_request);
+
+        let listener_thread = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            {
+                let mut reader = BufReader::new(&mut stream);
+                reader.read_line(&mut line).unwrap();
+            }
+            let envelope: crate::ui_sync::CliRpcEnvelope = serde_json::from_str(&line).unwrap();
+            captured_clone.lock().unwrap().replace(envelope.request);
+
+            let response = CliRpcResponse::ok(json!({
+                "number": 42,
+                "url": "https://example.com/pr/42",
+                "state": "open",
+                "title": "test",
+                "isMerged": false,
+            }));
+            let body = serde_json::to_string(&response).unwrap();
+            stream.write_all(body.as_bytes()).unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let request = CliRpcRequest::GithubPrStatus {
+            workspace_ref: "ws-1".into(),
+        };
+        let response = dispatch_via_ipc(request.clone())
+            .expect("dispatch_via_ipc transport-level success")
+            .expect("desktop responded (Ok(Some))");
+        listener_thread.join().unwrap();
+
+        // Server side: the listener parsed the same request shape
+        // back out of the envelope, byte-for-byte.
+        assert_eq!(captured_request.lock().unwrap().as_ref(), Some(&request));
+        // Client side: the response landed with the canned payload
+        // intact through the wire path.
+        assert!(response.ok);
+        assert!(response.error.is_none());
+        let result = response.result.expect("response carries result");
+        assert_eq!(result.get("number").and_then(|v| v.as_i64()), Some(42));
+        assert_eq!(
+            result.get("url").and_then(|v| v.as_str()),
+            Some("https://example.com/pr/42"),
+        );
+    }
+
+    #[test]
+    fn dispatch_via_ipc_returns_none_when_socket_is_missing() {
+        let _guard = lock_test_env();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("HELMOR_DATA_DIR", dir.path());
+        // Don't create the socket — the production "desktop not
+        // running" case. Must short-circuit to `Ok(None)` so the
+        // CLI falls back to the laptop's `gh` cleanly.
+        let result = dispatch_via_ipc(CliRpcRequest::GithubPrShow {
+            workspace_ref: "ws-1".into(),
+        })
+        .unwrap();
+        assert!(result.is_none(), "no socket → Ok(None), got {result:?}");
+    }
+
+    #[test]
+    fn dispatch_via_ipc_propagates_server_error_response() {
+        let _guard = lock_test_env();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("HELMOR_DATA_DIR", dir.path());
+        crate::data_dir::ensure_directory_structure().unwrap();
+
+        let socket = crate::ui_sync::socket_path().unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        let listener_thread = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            {
+                let mut reader = BufReader::new(&mut stream);
+                reader.read_line(&mut line).unwrap();
+            }
+            let response = CliRpcResponse::err("workspace not found: ws-doesnt-exist");
+            let body = serde_json::to_string(&response).unwrap();
+            stream.write_all(body.as_bytes()).unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+        });
+
+        let response = dispatch_via_ipc(CliRpcRequest::GithubPrMerge {
+            workspace_ref: "ws-doesnt-exist".into(),
+        })
+        .unwrap()
+        .unwrap();
+        listener_thread.join().unwrap();
+
+        // Wire-level error response must survive deserialization with
+        // its message intact — the CLI's `decode_ipc_result` reads
+        // this exact field to bail with an operator-actionable message.
+        assert!(!response.ok);
+        assert_eq!(
+            response.error.as_deref(),
+            Some("workspace not found: ws-doesnt-exist"),
+        );
+    }
+}
