@@ -76,19 +76,21 @@ The install gate now reinstalls the remote binary on any version drift (not just
 
 **What you see**
 - The workspace's header shows the runtime chip (e.g. `docker-linux-arm64`) — so the binding is live.
-- The chat thread renders agent prompts but every tool call surfaces an error: `gh: not found`, `claude: not found`, or `Not logged in — Please run /login`.
+- The chat thread renders the user prompt but the assistant response is `"Not logged in · Please run /login · Authentication failed: ..."` (or similar). Tool calls never run.
 
 **Why**
 
-The container has the daemon and (probably) the sidecar, but is missing one of:
-- **`gh` / `glab`** — the forge CLIs. The Helmor agent bundle stages these on first install; if you wiped the bundle (`docs/remote-runner.md` § Inspecting + uninstalling) and only restored the daemon, `gh` is gone.
-- **`claude` auth** — the bundled `claude` binary has no credentials on the container.
+The session's selected model is the *Anthropic-hosted* `claude` (the default for a fresh session). The container's bundled `claude` binary spawns and tries to authenticate against `api.anthropic.com`; without an Anthropic API key on the container, the auth fails and the SDK surfaces the `/login` hint.
+
+This is NOT a `gh`/`glab` problem — those bind separately, per repo, and only fire when the agent invokes a forge tool. The login hint comes from the model provider, not the forge CLI.
 
 **Recovery**
 
-1. **Settings → Remote Servers → Reinstall** — pushes the full bundle (`helmor-sidecar` + `claude` + the forge CLIs). Confirms `gh --version` and `glab --version` work on the container.
-2. If forge ops still fail with "Not logged in," the container's `gh` needs `gh auth login` interactively. The Helmor desktop has a per-workspace "Connect GitHub" affordance in the inspector — use it from the GUI; it runs the auth flow against the container's `gh`, not the laptop's.
-3. The CLI's `helmor github pr ...` ops route through the running desktop's IPC when the workspace is bound to a remote — so once the GUI's auth is healthy, the CLI commands work too. If the desktop isn't running, the CLI falls back to the laptop's `gh` (with a one-line warning).
+1. **Switch the session's model.** In the composer's model picker, pick a custom provider (e.g. an LM Studio bridge over `host.docker.internal`) instead of Anthropic-hosted. The bridge has no per-container auth requirement; it just needs to be network-reachable from inside the container.
+2. **Or: provide the credential.** If you genuinely want the container talking to Anthropic, set `ANTHROPIC_API_KEY` on the container (`docker exec -e ANTHROPIC_API_KEY=... ...` for ad-hoc, or a per-container `.env` for persistence). Helmor doesn't forward the host's key.
+3. **Or: open the desktop's session settings** and pin the workspace's default model to the bridge. New sessions on this workspace then start with the right provider.
+
+The `gh` / `glab` story is separate: if a forge tool call surfaces `gh: not found`, the bundle is missing the forge CLIs. **Settings → Remote Servers → Reinstall** re-stages the full bundle (`helmor-sidecar` + `claude` + `gh` + `glab`). The Helmor desktop has a per-workspace "Connect GitHub" affordance in the inspector for the gh-auth case; it runs the auth flow against the container's `gh`, not the laptop's. The CLI's `helmor github pr ...` ops route through the running desktop's IPC when the workspace is bound to a remote — once the GUI's auth is healthy, the CLI commands work too.
 
 ---
 
