@@ -1,3 +1,26 @@
+//! Unix-socket listener that backs the desktop's `ui_sync` IPC.
+//!
+//! The same socket file (`{data_dir}/run/ui-sync.sock`) carries two
+//! line-delimited JSON envelope shapes — the listener distinguishes
+//! them by which top-level version field is present, no separate
+//! discriminator needed:
+//!
+//! - [`UiMutationEnvelope`] (`version: u8`) — fire-and-forget UI
+//!   cache-invalidation events broadcast by `notify_running_app`.
+//!   Acknowledged with `{"ok":true}` and no body.
+//! - [`CliRpcEnvelope`] (`cliRpcVersion: u8`) — request/response
+//!   forge RPCs sent by the `helmor` CLI when its target workspace
+//!   is bound to a remote runtime. Dispatched through
+//!   [`dispatch_cli_rpc`] and the serialized [`CliRpcResponse`] is
+//!   written back on the same connection.
+//!
+//! UI mutations are tried first because they're the high-volume
+//! shape; CLI RPC falls through and `"invalid payload"` is the last
+//! resort. Each connection handles exactly one line and closes — the
+//! listener thread keeps accepting indefinitely. Panics inside
+//! `dispatch_cli_rpc` are caught at that boundary so a single bad
+//! request can't tear this listener thread down.
+
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
@@ -43,18 +66,9 @@ pub fn start_listener<R: Runtime>(app: AppHandle<R>) -> Result<()> {
                         reader.read_line(&mut line)
                     };
 
-                    // Two envelope shapes share this socket:
-                    //   - UiMutationEnvelope (notify_running_app): the
-                    //     pre-existing fire-and-forget event channel.
-                    //     Distinguished by its `version` field.
-                    //   - CliRpcEnvelope (CLI → desktop forge RPC):
-                    //     a request/response RPC for `helmor github pr ...`
-                    //     when the workspace is bound to a remote.
-                    //     Distinguished by its `cliRpcVersion` field.
-                    //
-                    // Try UI mutation first since it's higher-volume; fall
-                    // through to CLI RPC; only if both shape-checks fail
-                    // do we emit `invalid payload`.
+                    // Shape-sniff for the two envelope kinds documented at
+                    // the top of this file. UI mutation first (higher
+                    // volume), CLI RPC second, `invalid payload` last.
                     let response_bytes: Vec<u8> = match read_result {
                         Ok(0) => br#"{"ok":false,"error":"empty request"}"#.to_vec(),
                         Ok(_) => {
