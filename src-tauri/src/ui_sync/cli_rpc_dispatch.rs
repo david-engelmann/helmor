@@ -1,13 +1,21 @@
 //! Server-side handler for [`CliRpcRequest`] frames received on the
 //! `ui_sync` socket. Resolves the workspace's bound runtime via the
 //! same `RuntimeRegistry` + `WorkspaceRuntimeBindings` the GUI uses,
-//! calls the matching `forge::github::*` function, and serializes the
-//! result into a [`CliRpcResponse`].
+//! calls the matching `forge::github::*` function, and serializes
+//! the result into a [`CliRpcResponse`].
 //!
-//! Errors (workspace resolution failures, forge-op panics caught via
-//! `catch_unwind`-shaped guards higher up) come back as
-//! `CliRpcResponse::err(...)` rather than dropping the connection —
-//! the CLI relies on getting a typed reply for every request.
+//! Errors that come back as a Rust `Result::Err` (workspace not
+//! found, forge op returned an `anyhow::Error`) are converted to
+//! `CliRpcResponse::err(...)` so the CLI always gets a typed reply.
+//!
+//! Panics in a downstream forge function are NOT caught here — they
+//! propagate up to the socket listener thread and tear it down. This
+//! matches the existing `notify_running_app` listener's behavior and
+//! is acceptable because the forge functions exercised here are also
+//! reachable via the GUI's Tauri commands and don't panic in
+//! production. If that changes, wrap the `op(...)` call below in
+//! `std::panic::catch_unwind` and turn the caught panic into a
+//! `CliRpcResponse::err`.
 
 use std::sync::Arc;
 
