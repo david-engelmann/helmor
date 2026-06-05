@@ -1,3 +1,4 @@
+use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Arc;
@@ -261,113 +262,141 @@ pub(super) fn stream_via_sidecar(
     let transport_for_loop = Arc::clone(&transport);
 
     tauri::async_runtime::spawn_blocking(move || {
-        let stream_started_at = Instant::now();
-        tracing::info!(
-            rid = %rid,
-            helmor_session_id = ?hsid_copy,
-            sidecar_session_id = %sidecar_session_id_copy,
-            provider = %provider,
-            model = %model_copy.cli_model,
-            "stream: event loop starting"
-        );
+        // Cleanup needs `rid`, `transport_for_loop`, `app`, and a copy
+        // of `on_event` to be reachable AFTER the panic boundary, since
+        // the inner `move ||` consumes the originals. All four are cheap
+        // to clone (String + Arc + AppHandle + Channel).
+        let cleanup_rid = rid.clone();
+        let cleanup_transport = Arc::clone(&transport_for_loop);
+        let cleanup_app = app.clone();
+        let cleanup_channel = on_event.clone();
 
-        let active_streams_state: tauri::State<'_, ActiveStreams> = app.state();
-        let mut resolved_session_id: Option<String> = resume_session_id.clone();
-        let context_key = rid.clone();
-        let pipeline_session_id = hsid_copy.clone().unwrap_or_else(|| context_key.clone());
-        let mut pipeline = hsid_copy.as_ref().map(|_| {
-            crate::pipeline::MessagePipeline::new(
-                provider.as_str(),
-                &model_copy.cli_model,
-                &context_key,
-                &pipeline_session_id,
-            )
-        });
-        let mut event_count: u64 = 0;
-        let mut heartbeat_count: u64 = 0;
+        // The event loop body runs inside `catch_unwind` so a panic in
+        // any of its inner machinery (sidecar adapter, pipeline reducer,
+        // pattern match on an unexpected event shape, indexing a vec out
+        // of range, etc.) is converted into a clean "stream crashed"
+        // event for the UI plus full subscription cleanup, instead of
+        // silently killing the spawn_blocking worker and leaving the
+        // frontend waiting on a stream that will never tick again. The
+        // CLI IPC dispatcher uses the same shape — see
+        // `crate::ui_sync::cli_rpc_dispatch::run_catching_panic`.
+        let loop_outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let stream_started_at = Instant::now();
+            tracing::info!(
+                rid = %rid,
+                helmor_session_id = ?hsid_copy,
+                sidecar_session_id = %sidecar_session_id_copy,
+                provider = %provider,
+                model = %model_copy.cli_model,
+                "stream: event loop starting"
+            );
 
-        let mut exchange_ctx: Option<ExchangeContext> = None;
-        // `persisted_turn_count` lives in this local rather than in
-        // `turn_session.ctx` because the inline DB-write loops in each
-        // arm need shared `&mut` access alongside the pipeline's
-        // `accumulator.turn_at()`. Once the persist loop migrates
-        // behind `Action::PersistTurnRange`, this can move into ctx.
-        let mut persisted_turn_count: usize = 0;
+            // `active_streams_state` lookup moved to the cleanup block after
+            // the panic boundary — the inner loop never referenced it
+            // directly, only the (now-outside) cleanup did.
+            let mut resolved_session_id: Option<String> = resume_session_id.clone();
+            let context_key = rid.clone();
+            let pipeline_session_id = hsid_copy.clone().unwrap_or_else(|| context_key.clone());
+            let mut pipeline = hsid_copy.as_ref().map(|_| {
+                crate::pipeline::MessagePipeline::new(
+                    provider.as_str(),
+                    &model_copy.cli_model,
+                    &context_key,
+                    &pipeline_session_id,
+                )
+            });
+            let mut event_count: u64 = 0;
+            let mut heartbeat_count: u64 = 0;
 
-        // Short-borrow only. The single-writer pool (max_size=1) is shared
-        // with every other write in the app; a long-held handle here would
-        // block pin/unpin/mark-read/rename for the entire turn.
-        if let Some(hsid) = &hsid_copy {
-            let ctx = ExchangeContext {
-                helmor_session_id: hsid.clone(),
-                model_id: model_copy.id.to_string(),
-                model_provider: model_copy.provider.to_string(),
-                user_message_id: user_message_id_copy
-                    .clone()
-                    .unwrap_or_else(|| Uuid::new_v4().to_string()),
-            };
+            let mut exchange_ctx: Option<ExchangeContext> = None;
+            // `persisted_turn_count` lives in this local rather than in
+            // `turn_session.ctx` because the inline DB-write loops in each
+            // arm need shared `&mut` access alongside the pipeline's
+            // `accumulator.turn_at()`. Once the persist loop migrates
+            // behind `Action::PersistTurnRange`, this can move into ctx.
+            let mut persisted_turn_count: usize = 0;
 
-            match crate::models::db::write_conn() {
-                Ok(conn) => {
-                    if let Err(e) = conn.execute(
-                        "UPDATE sessions SET fast_mode = ?1 WHERE id = ?2",
-                        rusqlite::params![fast_mode, &ctx.helmor_session_id],
-                    ) {
-                        tracing::error!(rid = %rid, "Failed to update fast_mode: {e}");
-                    }
+            // Short-borrow only. The single-writer pool (max_size=1) is shared
+            // with every other write in the app; a long-held handle here would
+            // block pin/unpin/mark-read/rename for the entire turn.
+            if let Some(hsid) = &hsid_copy {
+                let ctx = ExchangeContext {
+                    helmor_session_id: hsid.clone(),
+                    model_id: model_copy.id.to_string(),
+                    model_provider: model_copy.provider.to_string(),
+                    user_message_id: user_message_id_copy
+                        .clone()
+                        .unwrap_or_else(|| Uuid::new_v4().to_string()),
+                };
 
-                    match persist_user_message(&conn, &ctx, &prompt_copy, &files_copy, &images_copy)
-                    {
-                        Ok(()) => {
-                            tracing::debug!(rid = %rid, "User message persisted to DB");
-                            exchange_ctx = Some(ctx);
+                match crate::models::db::write_conn() {
+                    Ok(conn) => {
+                        if let Err(e) = conn.execute(
+                            "UPDATE sessions SET fast_mode = ?1 WHERE id = ?2",
+                            rusqlite::params![fast_mode, &ctx.helmor_session_id],
+                        ) {
+                            tracing::error!(rid = %rid, "Failed to update fast_mode: {e}");
                         }
-                        Err(error) => {
-                            tracing::error!(rid = %rid, "Failed to persist user message: {error}");
+
+                        match persist_user_message(
+                            &conn,
+                            &ctx,
+                            &prompt_copy,
+                            &files_copy,
+                            &images_copy,
+                        ) {
+                            Ok(()) => {
+                                tracing::debug!(rid = %rid, "User message persisted to DB");
+                                exchange_ctx = Some(ctx);
+                            }
+                            Err(error) => {
+                                tracing::error!(rid = %rid, "Failed to persist user message: {error}");
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    tracing::error!(rid = %rid, "Failed to borrow write conn for initial persist: {e}");
+                    Err(e) => {
+                        tracing::error!(rid = %rid, "Failed to borrow write conn for initial persist: {e}");
+                    }
                 }
             }
-        }
 
-        tracing::debug!(rid = %rid, "Waiting for sidecar events...");
+            tracing::debug!(rid = %rid, "Waiting for sidecar events...");
 
-        // State machine session — iteration 4 onwards. Each migrated
-        // event arm dispatches through `turn_session.handle_*`; the
-        // remaining arms still drive the legacy flow. ctx fields here
-        // are a snapshot at session-start; events that mutate them
-        // (e.g., `permissionModeChanged`) mirror the change back into
-        // the legacy local vars until those readers migrate too.
-        let apply_ctx = actions::ApplyContext {
-            on_event: &on_event,
-            app: &app,
-        };
-        let mut turn_session = state::TurnSession::new(state::TurnContext {
-            provider: provider.clone(),
-            model_id: model_id.clone(),
-            working_directory: working_dir_str.clone(),
-            effort_level: effort_copy.clone(),
-            permission_mode: permission_mode_initial.clone(),
-            fast_mode,
-            helmor_session_id: hsid_copy.clone(),
-            resolved_session_id: resolved_session_id.clone(),
-            resolved_model: model_copy.cli_model.to_string(),
-            persisted_turn_count: 0,
-            persisted_exit_plan_review: None,
-        });
+            // State machine session — iteration 4 onwards. Each migrated
+            // event arm dispatches through `turn_session.handle_*`; the
+            // remaining arms still drive the legacy flow. ctx fields here
+            // are a snapshot at session-start; events that mutate them
+            // (e.g., `permissionModeChanged`) mirror the change back into
+            // the legacy local vars until those readers migrate too.
+            let apply_ctx = actions::ApplyContext {
+                on_event: &on_event,
+                app: &app,
+            };
+            let mut turn_session = state::TurnSession::new(state::TurnContext {
+                provider: provider.clone(),
+                model_id: model_id.clone(),
+                working_directory: working_dir_str.clone(),
+                effort_level: effort_copy.clone(),
+                permission_mode: permission_mode_initial.clone(),
+                fast_mode,
+                helmor_session_id: hsid_copy.clone(),
+                resolved_session_id: resolved_session_id.clone(),
+                resolved_model: model_copy.cli_model.to_string(),
+                persisted_turn_count: 0,
+                persisted_exit_plan_review: None,
+            });
 
-        loop {
-            let event = match rx.recv_timeout(HEARTBEAT_TIMEOUT) {
-                Ok(ev) => ev,
-                Err(err @ (RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected)) => {
-                    let kind = match err {
-                        RecvTimeoutError::Timeout => state::AbnormalExit::HeartbeatTimeout,
-                        RecvTimeoutError::Disconnected => state::AbnormalExit::SidecarDisconnected,
-                    };
-                    let (reason_log, user_message, should_stop_sidecar) = match kind {
+            loop {
+                let event = match rx.recv_timeout(HEARTBEAT_TIMEOUT) {
+                    Ok(ev) => ev,
+                    Err(err @ (RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected)) => {
+                        let kind = match err {
+                            RecvTimeoutError::Timeout => state::AbnormalExit::HeartbeatTimeout,
+                            RecvTimeoutError::Disconnected => {
+                                state::AbnormalExit::SidecarDisconnected
+                            }
+                        };
+                        let (reason_log, user_message, should_stop_sidecar) = match kind {
                         state::AbnormalExit::HeartbeatTimeout => (
                             format!(
                                 "heartbeat lost for {:?} — treating stream as dead",
@@ -388,134 +417,134 @@ pub(super) fn stream_via_sidecar(
                             false,
                         ),
                     };
-                    tracing::error!(rid = %rid, "{reason_log}");
+                        tracing::error!(rid = %rid, "{reason_log}");
 
-                    if should_stop_sidecar {
-                        let stop_req = crate::sidecar::SidecarRequest {
-                            id: Uuid::new_v4().to_string(),
-                            method: "stopSession".to_string(),
-                            params: serde_json::json!({
-                                "sessionId": sidecar_session_id_copy,
-                                "provider": provider,
-                            }),
-                        };
-                        if let Err(e) = transport_for_loop.send(&stop_req) {
-                            tracing::warn!(rid = %rid, "stopSession during abnormal exit failed: {e}");
-                        }
-                    }
-
-                    let resolved_model = pipeline
-                        .as_ref()
-                        .map(|p| p.accumulator.resolved_model().to_string())
-                        .unwrap_or_else(|| model_copy.cli_model.to_string());
-                    let persisted = cleanup_abnormal_stream_exit(
-                        &rid,
-                        exchange_ctx.as_ref(),
-                        &resolved_model,
-                        &user_message,
-                        effort_copy.as_deref(),
-                        turn_session.ctx.permission_mode.as_deref(),
-                    );
-
-                    tracing::info!(
-                        rid = %rid,
-                        event_count,
-                        heartbeat_count,
-                        elapsed_ms = stream_started_at.elapsed().as_millis(),
-                        persisted,
-                        has_exchange_ctx = exchange_ctx.is_some(),
-                        "stream: abnormal exit — finalized"
-                    );
-
-                    match turn_session.handle_abnormal_exit(kind, user_message, persisted) {
-                        Ok(actions) => {
-                            for action in actions {
-                                actions::apply_action(action, &apply_ctx);
+                        if should_stop_sidecar {
+                            let stop_req = crate::sidecar::SidecarRequest {
+                                id: Uuid::new_v4().to_string(),
+                                method: "stopSession".to_string(),
+                                params: serde_json::json!({
+                                    "sessionId": sidecar_session_id_copy,
+                                    "provider": provider,
+                                }),
+                            };
+                            if let Err(e) = transport_for_loop.send(&stop_req) {
+                                tracing::warn!(rid = %rid, "stopSession during abnormal exit failed: {e}");
                             }
                         }
-                        Err(err) => {
-                            tracing::error!(
-                                rid = %rid,
-                                error = ?err,
-                                "abnormal exit transition rejected",
-                            );
-                        }
-                    }
-                    break;
-                }
-            };
 
-            // Heartbeats are keepalives only — do not advance pipeline state.
-            if event.event_type() == "heartbeat" {
-                heartbeat_count += 1;
-                tracing::trace!(rid = %rid, heartbeat_count, "heartbeat");
-                continue;
-            }
+                        let resolved_model = pipeline
+                            .as_ref()
+                            .map(|p| p.accumulator.resolved_model().to_string())
+                            .unwrap_or_else(|| model_copy.cli_model.to_string());
+                        let persisted = cleanup_abnormal_stream_exit(
+                            &rid,
+                            exchange_ctx.as_ref(),
+                            &resolved_model,
+                            &user_message,
+                            effort_copy.as_deref(),
+                            turn_session.ctx.permission_mode.as_deref(),
+                        );
 
-            // Older sidecars may forward Codex app-server retry notices as
-            // `type:error` events while preserving the structured
-            // `willRetry=true` bit. Treat only those explicit retry markers as
-            // liveness pings; message-only errors are terminal and must not be
-            // converted into a successful `end` if the sidecar's finally block
-            // emits one immediately after.
-            if model_copy.provider == "codex"
-                && event.event_type() == "error"
-                && bridges::is_retryable_sidecar_error(&event.raw)
-            {
-                heartbeat_count += 1;
-                let message = event
-                    .raw
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("retryable sidecar error");
-                tracing::debug!(rid = %rid, heartbeat_count, "Forwarding retryable sidecar error as notice: {message}");
+                        tracing::info!(
+                            rid = %rid,
+                            event_count,
+                            heartbeat_count,
+                            elapsed_ms = stream_started_at.elapsed().as_millis(),
+                            persisted,
+                            has_exchange_ctx = exchange_ctx.is_some(),
+                            "stream: abnormal exit — finalized"
+                        );
 
-                if let Some(pipeline_state) = pipeline.as_mut() {
-                    let notice = bridges::retry_notice_event_from_error(&event.raw);
-                    let line = serde_json::to_string(&notice).unwrap_or_default();
-                    let emit = pipeline_state.push_event(&notice, &line);
-                    match turn_session.handle_stream_event(emit) {
-                        Ok(actions) => {
-                            for action in actions {
-                                actions::apply_action(action, &apply_ctx);
+                        match turn_session.handle_abnormal_exit(kind, user_message, persisted) {
+                            Ok(actions) => {
+                                for action in actions {
+                                    actions::apply_action(action, &apply_ctx);
+                                }
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    rid = %rid,
+                                    error = ?err,
+                                    "abnormal exit transition rejected",
+                                );
                             }
                         }
-                        Err(err) => {
-                            tracing::error!(
-                                rid = %rid,
-                                error = ?err,
-                                "retry_notice transition rejected",
-                            );
+                        break;
+                    }
+                };
+
+                // Heartbeats are keepalives only — do not advance pipeline state.
+                if event.event_type() == "heartbeat" {
+                    heartbeat_count += 1;
+                    tracing::trace!(rid = %rid, heartbeat_count, "heartbeat");
+                    continue;
+                }
+
+                // Older sidecars may forward Codex app-server retry notices as
+                // `type:error` events while preserving the structured
+                // `willRetry=true` bit. Treat only those explicit retry markers as
+                // liveness pings; message-only errors are terminal and must not be
+                // converted into a successful `end` if the sidecar's finally block
+                // emits one immediately after.
+                if model_copy.provider == "codex"
+                    && event.event_type() == "error"
+                    && bridges::is_retryable_sidecar_error(&event.raw)
+                {
+                    heartbeat_count += 1;
+                    let message = event
+                        .raw
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("retryable sidecar error");
+                    tracing::debug!(rid = %rid, heartbeat_count, "Forwarding retryable sidecar error as notice: {message}");
+
+                    if let Some(pipeline_state) = pipeline.as_mut() {
+                        let notice = bridges::retry_notice_event_from_error(&event.raw);
+                        let line = serde_json::to_string(&notice).unwrap_or_default();
+                        let emit = pipeline_state.push_event(&notice, &line);
+                        match turn_session.handle_stream_event(emit) {
+                            Ok(actions) => {
+                                for action in actions {
+                                    actions::apply_action(action, &apply_ctx);
+                                }
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    rid = %rid,
+                                    error = ?err,
+                                    "retry_notice transition rejected",
+                                );
+                            }
                         }
                     }
+                    continue;
                 }
-                continue;
-            }
 
-            event_count += 1;
+                event_count += 1;
 
-            // Claude's authoritative session_id comes only from `system.init`.
-            // Earlier events — notably SessionStart:resume hook notifications —
-            // carry a transient session_id that does NOT map to any real
-            // conversation jsonl. Adopting them poisons the next resume with
-            // "No conversation found". Codex flattens every notification with
-            // its real thread_id, so any event is safe.
-            let is_provider_session_marker = match model_copy.provider.as_str() {
-                "claude" => event.is_claude_session_init(),
-                _ => true,
-            };
-            if is_provider_session_marker {
-                if let Some(sid) = event.session_id() {
-                    if should_adopt_provider_session_id(
-                        resolved_session_id.as_deref(),
-                        sid,
-                        hsid_copy.as_deref(),
-                    ) {
-                        resolved_session_id = Some(sid.to_string());
-                        if let (Some(ctx), Some(conn)) =
-                            (&exchange_ctx, &crate::models::db::write_conn().ok())
-                        {
-                            if let Err(error) = conn.execute(
+                // Claude's authoritative session_id comes only from `system.init`.
+                // Earlier events — notably SessionStart:resume hook notifications —
+                // carry a transient session_id that does NOT map to any real
+                // conversation jsonl. Adopting them poisons the next resume with
+                // "No conversation found". Codex flattens every notification with
+                // its real thread_id, so any event is safe.
+                let is_provider_session_marker = match model_copy.provider.as_str() {
+                    "claude" => event.is_claude_session_init(),
+                    _ => true,
+                };
+                if is_provider_session_marker {
+                    if let Some(sid) = event.session_id() {
+                        if should_adopt_provider_session_id(
+                            resolved_session_id.as_deref(),
+                            sid,
+                            hsid_copy.as_deref(),
+                        ) {
+                            resolved_session_id = Some(sid.to_string());
+                            if let (Some(ctx), Some(conn)) =
+                                (&exchange_ctx, &crate::models::db::write_conn().ok())
+                            {
+                                if let Err(error) = conn.execute(
                                 "UPDATE sessions SET provider_session_id = ?2, agent_type = ?3 WHERE id = ?1",
                                 params![ctx.helmor_session_id, sid, ctx.model_provider],
                             ) {
@@ -523,617 +552,80 @@ pub(super) fn stream_via_sidecar(
                             } else {
                                 tracing::debug!(rid = %rid, provider_session_id = sid, "Session ID persisted");
                             }
+                            }
                         }
                     }
                 }
-            }
 
-            match event.event_type() {
-                "end" | "aborted" => {
-                    // Infrastructure-side prep stays inline because it
-                    // needs owned access to the pipeline and the
-                    // single-writer DB pool. The state machine handles
-                    // the terminal transition + the Update + Done|Aborted
-                    // emit pair (and appends the persisted exit-plan
-                    // review row when one was captured earlier).
-                    let is_aborted = event.event_type() == "aborted";
-                    let reason = if is_aborted {
-                        Some(
-                            event
-                                .raw
-                                .get("reason")
-                                .and_then(Value::as_str)
-                                .unwrap_or("user_requested")
-                                .to_string(),
-                        )
-                    } else {
-                        None
-                    };
-                    let status = if is_aborted { "aborted" } else { "idle" };
-
-                    // Tracks whether the FINAL finalize (persist_result_and_finalize
-                    // for end, finalize_session_metadata for aborted) succeeded.
-                    // Turn-message failures don't flip this back to false — the
-                    // frontend uses `persisted` as "end state is durable in DB".
-                    let mut persisted = false;
-                    let mut resolved_model = model_copy.cli_model.to_string();
-                    let mut final_messages: Vec<ThreadMessageLike> = Vec::new();
-                    // Set on an empty `end` for a `resume:` stream — surface
-                    // an Error instead of silently committing a blank Done
-                    // (issue #398). We do NOT clear provider_session_id
-                    // here: a single empty response can be a transient API
-                    // blip, and dropping the resume id would lose the whole
-                    // conversation on retry (issue #402). The hard-evidence
-                    // clear lives in `cleanup_abnormal_stream_exit`.
-                    let mut bad_resume_failure = false;
-                    const BAD_RESUME_USER_MESSAGE: &str =
-                        "The provider returned an empty response. Please try again. \
-                         If this keeps happening on this thread, start a new conversation.";
-
-                    if let Some(mut pipeline_state) = pipeline.take() {
-                        if is_aborted {
-                            pipeline_state.accumulator.mark_pending_tools_aborted();
-                        }
-
-                        pipeline_state.accumulator.flush_pending();
-
-                        if is_aborted {
-                            pipeline_state.accumulator.flush_codex_in_progress();
-                            pipeline_state.accumulator.flush_cursor_in_progress();
-                            pipeline_state.materialize_partial();
-                            pipeline_state.accumulator.append_aborted_notice();
-                        }
-
-                        // Borrow writer once for both turn persistence and the
-                        // terminal finalize. drain_output between the two uses
-                        // is purely in-memory, so holding the writer pool slot
-                        // across it is cheap and halves the writer round-trips
-                        // per terminal event.
-                        let writer = exchange_ctx
-                            .as_ref()
-                            .and_then(|_| crate::models::db::write_conn().ok());
-
-                        // Persist remaining turns and sync their UUIDs back
-                        // into collected[] so streaming IDs = DB IDs.
-                        if let (Some(ctx), Some(conn)) = (exchange_ctx.as_ref(), writer.as_ref()) {
-                            let model_str = pipeline_state.accumulator.resolved_model().to_string();
-                            while persisted_turn_count < pipeline_state.accumulator.turns_len() {
-                                match persist_turn_message(
-                                    conn,
-                                    ctx,
-                                    pipeline_state.accumulator.turn_at(persisted_turn_count),
-                                    &model_str,
-                                    // Local-sidecar path has no journal seq —
-                                    // 24q-2 only applies to remote-runner.
-                                    None,
-                                ) {
-                                    Ok(_) => persisted_turn_count += 1,
-                                    Err(error) => {
-                                        tracing::error!(
-                                            turn = persisted_turn_count,
-                                            "Failed to persist turn: {error}"
-                                        );
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        let output = pipeline_state
-                            .accumulator
-                            .drain_output(resolved_session_id.as_deref());
-                        if !output.assistant_text.is_empty() {
-                            resolved_model = output.resolved_model.clone();
-                        }
-
-                        // Empty result on a `resume:` stream → surface as
-                        // Error. Skipped on the no-resume case (a brand-new
-                        // turn returning empty is a different kind of bug).
-                        let is_empty_resume = !is_aborted
-                            && resume_session_id.is_some()
-                            && persisted_turn_count == 0
-                            && output.assistant_text.trim().is_empty();
-
-                        if let (Some(ctx), Some(conn)) = (exchange_ctx.as_ref(), writer.as_ref()) {
-                            if is_empty_resume {
-                                bad_resume_failure = true;
-                                match persist_error_message(
-                                    conn,
-                                    ctx,
-                                    &resolved_model,
-                                    BAD_RESUME_USER_MESSAGE,
-                                    None,
-                                ) {
-                                    Ok(_) => {}
-                                    Err(error) => {
-                                        tracing::error!(
-                                            rid = %rid,
-                                            "Failed to persist bad-resume error: {error}"
-                                        );
-                                    }
-                                }
-                                match finalize_session_metadata(
-                                    conn,
-                                    ctx,
-                                    "idle",
-                                    effort_copy.as_deref(),
-                                    turn_session.ctx.permission_mode.as_deref(),
-                                ) {
-                                    Ok(_) => persisted = true,
-                                    Err(error) => {
-                                        tracing::error!(
-                                            rid = %rid,
-                                            "Failed to finalize after empty resume: {error}"
-                                        );
-                                    }
-                                }
-                            } else if is_aborted {
-                                match finalize_session_metadata(
-                                    conn,
-                                    ctx,
-                                    status,
-                                    effort_copy.as_deref(),
-                                    turn_session.ctx.permission_mode.as_deref(),
-                                ) {
-                                    Ok(_) => persisted = true,
-                                    Err(error) => {
-                                        tracing::error!(rid = %rid, "Failed to finalize exchange: {error}");
-                                    }
-                                }
-                            } else {
-                                let preassigned = pipeline_state.accumulator.take_result_id();
-                                match persist_result_and_finalize(
-                                    conn,
-                                    ctx,
-                                    &output.resolved_model,
-                                    &output.assistant_text,
-                                    effort_copy.as_deref(),
-                                    turn_session.ctx.permission_mode.as_deref(),
-                                    &output.usage,
-                                    output.result_json.as_deref(),
-                                    status,
-                                    preassigned,
-                                ) {
-                                    Ok(_) => persisted = true,
-                                    Err(error) => {
-                                        tracing::error!(rid = %rid, "Failed to finalize exchange: {error}");
-                                    }
-                                }
-                            }
-                        } else if exchange_ctx.is_some() {
-                            tracing::error!(
-                                rid = %rid,
-                                "Failed to borrow writer for finalize — reporting persisted=false"
-                            );
-                        }
-                        drop(writer);
-
-                        // Final render with DB-synced IDs so the frontend
-                        // cache matches what the historical loader returns.
-                        final_messages = pipeline_state.finish();
-                    }
-
-                    tracing::info!(
-                        rid = %rid,
-                        outcome = if is_aborted { "aborted" } else { "done" },
-                        event_count,
-                        heartbeat_count,
-                        persisted_turn_count,
-                        elapsed_ms = stream_started_at.elapsed().as_millis(),
-                        persisted,
-                        bad_resume_failure,
-                        "stream: terminal event received"
-                    );
-
-                    if bad_resume_failure {
-                        // End in `Error` (not `Done`) so the frontend's
-                        // error path runs.
-                        let raw = json!({
-                            "type": "error",
-                            "message": BAD_RESUME_USER_MESSAGE,
-                            "internal": false,
-                        });
-                        match turn_session.handle_error(&raw, persisted) {
-                            Ok(actions) => {
-                                for action in actions {
-                                    actions::apply_action(action, &apply_ctx);
-                                }
-                            }
-                            Err(err) => {
-                                tracing::error!(
-                                    rid = %rid,
-                                    error = ?err,
-                                    "bad-resume error transition rejected",
-                                );
-                            }
-                        }
-                        break;
-                    }
-
-                    match turn_session.handle_end_or_aborted(
-                        is_aborted,
-                        reason,
-                        &resolved_model,
-                        final_messages,
-                        persisted,
-                    ) {
-                        Ok(actions) => {
-                            for action in actions {
-                                actions::apply_action(action, &apply_ctx);
-                            }
-                        }
-                        Err(err) => {
-                            tracing::error!(
-                                rid = %rid,
-                                error = ?err,
-                                outcome = if is_aborted { "aborted" } else { "done" },
-                                "end/aborted transition rejected",
-                            );
-                        }
-                    }
-                    break;
-                }
-                "permissionRequest" => {
-                    // Routed through `TurnSession::handle_permission_request`
-                    // — the first event arm migrated to the state machine.
-                    // Late events (after Terminated) are surfaced as a
-                    // tracing error rather than silently dropped.
-                    let raw = event.raw.clone();
-                    if let AgentStreamEvent::PermissionRequest {
-                        permission_id,
-                        tool_name,
-                        ..
-                    } = bridge_permission_request_event(&raw)
-                    {
-                        tracing::debug!(
-                            rid = %rid,
-                            tool = %tool_name,
-                            permission_id = %permission_id,
-                            "Permission request",
-                        );
-                    }
-                    match turn_session.handle_permission_request(&raw) {
-                        Ok(actions) => {
-                            for action in actions {
-                                actions::apply_action(action, &apply_ctx);
-                            }
-                        }
-                        Err(err) => {
-                            tracing::error!(
-                                rid = %rid,
-                                error = ?err,
-                                "permissionRequest transition rejected",
-                            );
-                        }
-                    }
-                }
-                "planCaptured" => {
-                    // Infrastructure-side prep (DB writes + pipeline flush)
-                    // stays inline because it needs owned access to the
-                    // single-writer DB pool and `&mut MessagePipeline`.
-                    // Once prepared, `turn_session.handle_plan_captured`
-                    // owns the state mutation (`persisted_exit_plan_review`)
-                    // and the Update + PlanCaptured emit sequence.
-                    let tool_use_id = event
-                        .raw
-                        .get("toolUseId")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                    let plan_value = event.raw.get("plan").cloned().unwrap_or(Value::Null);
-                    let tool_input = json!({ "plan": plan_value });
-                    tracing::debug!(rid = %rid, tool_use_id = %tool_use_id, "Plan captured");
-
-                    if let Some(pipeline_state) = pipeline.as_mut() {
-                        pipeline_state.accumulator.flush_pending();
-
-                        // Single writer borrow covers turn persistence and
-                        // the exit-plan message write below; only an
-                        // in-memory `resolved_model` read sits between them.
-                        let writer = exchange_ctx
-                            .as_ref()
-                            .and_then(|_| crate::models::db::write_conn().ok());
-
-                        if let (Some(ctx), Some(conn)) = (exchange_ctx.as_ref(), writer.as_ref()) {
-                            let model_str = pipeline_state.accumulator.resolved_model().to_string();
-                            while persisted_turn_count < pipeline_state.accumulator.turns_len() {
-                                match persist_turn_message(
-                                    conn,
-                                    ctx,
-                                    pipeline_state.accumulator.turn_at(persisted_turn_count),
-                                    &model_str,
-                                    // Local-sidecar path has no journal seq —
-                                    // 24q-2 only applies to remote-runner.
-                                    None,
-                                ) {
-                                    Ok(_) => persisted_turn_count += 1,
-                                    Err(error) => {
-                                        tracing::error!(
-                                            turn = persisted_turn_count,
-                                            "Failed to persist turn: {error}"
-                                        );
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-
-                        let resolved_model =
-                            pipeline_state.accumulator.resolved_model().to_string();
-                        let persisted_metadata = if let (Some(ctx), Some(conn)) =
-                            (exchange_ctx.as_ref(), writer.as_ref())
-                        {
-                            persist_exit_plan_message(
-                                conn,
-                                ctx,
-                                &resolved_model,
-                                &tool_use_id,
-                                "ExitPlanMode",
-                                &tool_input,
+                match event.event_type() {
+                    "end" | "aborted" => {
+                        // Infrastructure-side prep stays inline because it
+                        // needs owned access to the pipeline and the
+                        // single-writer DB pool. The state machine handles
+                        // the terminal transition + the Update + Done|Aborted
+                        // emit pair (and appends the persisted exit-plan
+                        // review row when one was captured earlier).
+                        let is_aborted = event.event_type() == "aborted";
+                        let reason = if is_aborted {
+                            Some(
+                                event
+                                    .raw
+                                    .get("reason")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("user_requested")
+                                    .to_string(),
                             )
-                            .ok()
                         } else {
                             None
                         };
-                        drop(writer);
-                        let (msg_id, created_at) = persisted_metadata.unwrap_or_default();
-                        let plan_message = build_exit_plan_review_message(
-                            (!msg_id.is_empty()).then_some(msg_id),
-                            (!created_at.is_empty()).then_some(created_at),
-                            &tool_use_id,
-                            "ExitPlanMode",
-                            &tool_input,
-                        );
+                        let status = if is_aborted { "aborted" } else { "idle" };
 
-                        let final_messages = pipeline_state.finish();
+                        // Tracks whether the FINAL finalize (persist_result_and_finalize
+                        // for end, finalize_session_metadata for aborted) succeeded.
+                        // Turn-message failures don't flip this back to false — the
+                        // frontend uses `persisted` as "end state is durable in DB".
+                        let mut persisted = false;
+                        let mut resolved_model = model_copy.cli_model.to_string();
+                        let mut final_messages: Vec<ThreadMessageLike> = Vec::new();
+                        // Set on an empty `end` for a `resume:` stream — surface
+                        // an Error instead of silently committing a blank Done
+                        // (issue #398). We do NOT clear provider_session_id
+                        // here: a single empty response can be a transient API
+                        // blip, and dropping the resume id would lose the whole
+                        // conversation on retry (issue #402). The hard-evidence
+                        // clear lives in `cleanup_abnormal_stream_exit`.
+                        let mut bad_resume_failure = false;
+                        const BAD_RESUME_USER_MESSAGE: &str =
+                            "The provider returned an empty response. Please try again. \
+                         If this keeps happening on this thread, start a new conversation.";
 
-                        match turn_session.handle_plan_captured(plan_message, final_messages) {
-                            Ok(actions) => {
-                                for action in actions {
-                                    actions::apply_action(action, &apply_ctx);
-                                }
+                        if let Some(mut pipeline_state) = pipeline.take() {
+                            if is_aborted {
+                                pipeline_state.accumulator.mark_pending_tools_aborted();
                             }
-                            Err(err) => {
-                                tracing::error!(
-                                    rid = %rid,
-                                    error = ?err,
-                                    "planCaptured transition rejected",
-                                );
+
+                            pipeline_state.accumulator.flush_pending();
+
+                            if is_aborted {
+                                pipeline_state.accumulator.flush_codex_in_progress();
+                                pipeline_state.accumulator.flush_cursor_in_progress();
+                                pipeline_state.materialize_partial();
+                                pipeline_state.accumulator.append_aborted_notice();
                             }
-                        }
-                    } else {
-                        // Pipeline was already taken (e.g., terminal
-                        // event arrived first). The frontend still gets
-                        // the bare PlanCaptured marker so its overlay
-                        // doesn't get stuck waiting on it.
-                        let _ = on_event.send(AgentStreamEvent::PlanCaptured {});
-                    }
-                }
-                "userInputRequest" => {
-                    // Unified user-input pause. Sources: Claude
-                    // AskUserQuestion (canUseTool), Claude MCP elicitation
-                    // (onElicitation), Codex `requestUserInput`. The
-                    // sidecar has the live SDK callback parked on a
-                    // promise; the SDK process keeps running and the
-                    // pipeline keeps accumulating. We persist any
-                    // complete turns up to this point (crash-safe) and
-                    // emit a snapshot Update + the UserInputRequest
-                    // marker so the frontend overlay shows up at the
-                    // right position. Subsequent stream events flow
-                    // normally once the user submits via
-                    // `respondToUserInput`.
-                    let user_input_id = event
-                        .raw
-                        .get("userInputId")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    let payload_kind = event
-                        .raw
-                        .get("payload")
-                        .and_then(|p| p.get("kind"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown");
-                    tracing::info!(
-                        rid = %rid,
-                        user_input_id = %user_input_id,
-                        payload_kind = %payload_kind,
-                        "AUQ/elicitation userInputRequest received from sidecar",
-                    );
-                    let mut resolved_model = model_copy.cli_model.to_string();
-                    let mut final_messages: Vec<ThreadMessageLike> = Vec::new();
 
-                    if let Some(pipeline_state) = pipeline.as_mut() {
-                        pipeline_state.accumulator.flush_pending();
+                            // Borrow writer once for both turn persistence and the
+                            // terminal finalize. drain_output between the two uses
+                            // is purely in-memory, so holding the writer pool slot
+                            // across it is cheap and halves the writer round-trips
+                            // per terminal event.
+                            let writer = exchange_ctx
+                                .as_ref()
+                                .and_then(|_| crate::models::db::write_conn().ok());
 
-                        if let (Some(ctx), Some(conn)) = (
-                            exchange_ctx.as_ref(),
-                            crate::models::db::write_conn().ok().as_ref(),
-                        ) {
-                            let model_str = pipeline_state.accumulator.resolved_model().to_string();
-                            while persisted_turn_count < pipeline_state.accumulator.turns_len() {
-                                match persist_turn_message(
-                                    conn,
-                                    ctx,
-                                    pipeline_state.accumulator.turn_at(persisted_turn_count),
-                                    &model_str,
-                                    // Local-sidecar path has no journal seq —
-                                    // 24q-2 only applies to remote-runner.
-                                    None,
-                                ) {
-                                    Ok(_) => persisted_turn_count += 1,
-                                    Err(error) => {
-                                        tracing::error!(
-                                            turn = persisted_turn_count,
-                                            "Failed to persist turn: {error}"
-                                        );
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-
-                        resolved_model = pipeline_state.accumulator.resolved_model().to_string();
-                        // `finish()` is non-destructive (a pure render),
-                        // so we keep the pipeline live for the events
-                        // that arrive after the user submits.
-                        final_messages = pipeline_state.finish();
-                    }
-
-                    match turn_session.handle_user_input_request(
-                        &event.raw,
-                        &resolved_model,
-                        final_messages,
-                    ) {
-                        Ok(actions) => {
-                            let emit_count = actions
-                                .iter()
-                                .filter(|a| matches!(a, actions::Action::EmitToFrontend(_)))
-                                .count();
-                            for action in actions {
-                                actions::apply_action(action, &apply_ctx);
-                            }
-                            tracing::info!(
-                                rid = %rid,
-                                user_input_id = %user_input_id,
-                                emit_count = emit_count,
-                                "AUQ/elicitation forwarded to frontend",
-                            );
-                        }
-                        Err(err) => {
-                            tracing::error!(
-                                rid = %rid,
-                                error = ?err,
-                                "userInputRequest transition rejected",
-                            );
-                        }
-                    }
-                }
-                "permissionModeChanged" => {
-                    match turn_session.handle_permission_mode_changed(&event.raw) {
-                        Ok(actions) => {
-                            for action in actions {
-                                actions::apply_action(action, &apply_ctx);
-                            }
-                        }
-                        Err(err) => {
-                            tracing::error!(
-                                rid = %rid,
-                                error = ?err,
-                                "permissionModeChanged transition rejected",
-                            );
-                        }
-                    }
-                }
-                "contextUsageUpdated" => {
-                    match turn_session.handle_context_usage_updated(&event.raw) {
-                        Ok(actions) => {
-                            for action in actions {
-                                actions::apply_action(action, &apply_ctx);
-                            }
-                        }
-                        Err(err) => {
-                            tracing::error!(
-                                rid = %rid,
-                                error = ?err,
-                                "contextUsageUpdated transition rejected",
-                            );
-                        }
-                    }
-                }
-                "codexGoalUpdated" => match turn_session.handle_codex_goal_updated(&event.raw) {
-                    Ok(actions) => {
-                        for action in actions {
-                            actions::apply_action(action, &apply_ctx);
-                        }
-                    }
-                    Err(err) => {
-                        tracing::error!(
-                            rid = %rid,
-                            error = ?err,
-                            "codexGoalUpdated transition rejected",
-                        );
-                    }
-                },
-                "error" => {
-                    // Pre-compute (message, internal) for tracing and DB
-                    // writes. Final emit goes through the state machine
-                    // so the Terminated transition is recorded; a stray
-                    // event after this point is now rejected loudly.
-                    let preview = bridge_error_event(&event.raw, false);
-                    let (message, internal) = match &preview {
-                        AgentStreamEvent::Error {
-                            message, internal, ..
-                        } => (message.clone(), *internal),
-                        _ => unreachable!("bridge_error_event returns Error variant"),
-                    };
-                    tracing::debug!(rid = %rid, internal, "Sidecar error: {message}");
-                    let mut persisted = false;
-
-                    if let (Some(ctx), Some(conn)) =
-                        (&exchange_ctx, &crate::models::db::write_conn().ok())
-                    {
-                        let resolved_model = pipeline
-                            .as_ref()
-                            .map(|pipeline_state| {
-                                pipeline_state.accumulator.resolved_model().to_string()
-                            })
-                            .unwrap_or_else(|| model_copy.cli_model.to_string());
-
-                        match persist_error_message(conn, ctx, &resolved_model, &message, None) {
-                            Ok(_) => persisted = true,
-                            Err(error) => {
-                                tracing::error!(rid = %rid, "Failed to persist error message: {error}");
-                            }
-                        }
-
-                        if let Err(error) = finalize_session_metadata(
-                            conn,
-                            ctx,
-                            "idle",
-                            effort_copy.as_deref(),
-                            turn_session.ctx.permission_mode.as_deref(),
-                        ) {
-                            tracing::error!(rid = %rid, "Failed to finalize error exchange: {error}");
-                        }
-                    }
-
-                    tracing::info!(
-                        rid = %rid,
-                        event_count,
-                        heartbeat_count,
-                        elapsed_ms = stream_started_at.elapsed().as_millis(),
-                        persisted,
-                        internal,
-                        "stream: error event — finalized"
-                    );
-
-                    match turn_session.handle_error(&event.raw, persisted) {
-                        Ok(actions) => {
-                            for action in actions {
-                                actions::apply_action(action, &apply_ctx);
-                            }
-                        }
-                        Err(err) => {
-                            tracing::error!(
-                                rid = %rid,
-                                error = ?err,
-                                "error transition rejected",
-                            );
-                        }
-                    }
-                    break;
-                }
-                _ => {
-                    // Default arm — covers `stream_event`, `assistant`,
-                    // `result`, `system`, etc. The pipeline accumulator
-                    // owns the dispatch by event type; the state machine
-                    // takes its `PipelineEmit` and decides what to send.
-                    let line = serde_json::to_string(&event.raw).unwrap_or_default();
-                    if !line.is_empty() && line != "{}" {
-                        if let Some(pipeline_state) = pipeline.as_mut() {
-                            let emit = pipeline_state.push_event(&event.raw, &line);
-
+                            // Persist remaining turns and sync their UUIDs back
+                            // into collected[] so streaming IDs = DB IDs.
                             if let (Some(ctx), Some(conn)) =
-                                (&exchange_ctx, &crate::models::db::write_conn().ok())
+                                (exchange_ctx.as_ref(), writer.as_ref())
                             {
                                 let model_str =
                                     pipeline_state.accumulator.resolved_model().to_string();
@@ -1144,11 +636,255 @@ pub(super) fn stream_via_sidecar(
                                         ctx,
                                         pipeline_state.accumulator.turn_at(persisted_turn_count),
                                         &model_str,
+                                        // Local-sidecar path has no journal seq —
+                                        // 24q-2 only applies to remote-runner.
                                         None,
                                     ) {
-                                        Ok(_) => {
-                                            persisted_turn_count += 1;
+                                        Ok(_) => persisted_turn_count += 1,
+                                        Err(error) => {
+                                            tracing::error!(
+                                                turn = persisted_turn_count,
+                                                "Failed to persist turn: {error}"
+                                            );
+                                            break;
                                         }
+                                    }
+                                }
+                            }
+                            let output = pipeline_state
+                                .accumulator
+                                .drain_output(resolved_session_id.as_deref());
+                            if !output.assistant_text.is_empty() {
+                                resolved_model = output.resolved_model.clone();
+                            }
+
+                            // Empty result on a `resume:` stream → surface as
+                            // Error. Skipped on the no-resume case (a brand-new
+                            // turn returning empty is a different kind of bug).
+                            let is_empty_resume = !is_aborted
+                                && resume_session_id.is_some()
+                                && persisted_turn_count == 0
+                                && output.assistant_text.trim().is_empty();
+
+                            if let (Some(ctx), Some(conn)) =
+                                (exchange_ctx.as_ref(), writer.as_ref())
+                            {
+                                if is_empty_resume {
+                                    bad_resume_failure = true;
+                                    match persist_error_message(
+                                        conn,
+                                        ctx,
+                                        &resolved_model,
+                                        BAD_RESUME_USER_MESSAGE,
+                                        None,
+                                    ) {
+                                        Ok(_) => {}
+                                        Err(error) => {
+                                            tracing::error!(
+                                                rid = %rid,
+                                                "Failed to persist bad-resume error: {error}"
+                                            );
+                                        }
+                                    }
+                                    match finalize_session_metadata(
+                                        conn,
+                                        ctx,
+                                        "idle",
+                                        effort_copy.as_deref(),
+                                        turn_session.ctx.permission_mode.as_deref(),
+                                    ) {
+                                        Ok(_) => persisted = true,
+                                        Err(error) => {
+                                            tracing::error!(
+                                                rid = %rid,
+                                                "Failed to finalize after empty resume: {error}"
+                                            );
+                                        }
+                                    }
+                                } else if is_aborted {
+                                    match finalize_session_metadata(
+                                        conn,
+                                        ctx,
+                                        status,
+                                        effort_copy.as_deref(),
+                                        turn_session.ctx.permission_mode.as_deref(),
+                                    ) {
+                                        Ok(_) => persisted = true,
+                                        Err(error) => {
+                                            tracing::error!(rid = %rid, "Failed to finalize exchange: {error}");
+                                        }
+                                    }
+                                } else {
+                                    let preassigned = pipeline_state.accumulator.take_result_id();
+                                    match persist_result_and_finalize(
+                                        conn,
+                                        ctx,
+                                        &output.resolved_model,
+                                        &output.assistant_text,
+                                        effort_copy.as_deref(),
+                                        turn_session.ctx.permission_mode.as_deref(),
+                                        &output.usage,
+                                        output.result_json.as_deref(),
+                                        status,
+                                        preassigned,
+                                    ) {
+                                        Ok(_) => persisted = true,
+                                        Err(error) => {
+                                            tracing::error!(rid = %rid, "Failed to finalize exchange: {error}");
+                                        }
+                                    }
+                                }
+                            } else if exchange_ctx.is_some() {
+                                tracing::error!(
+                                    rid = %rid,
+                                    "Failed to borrow writer for finalize — reporting persisted=false"
+                                );
+                            }
+                            drop(writer);
+
+                            // Final render with DB-synced IDs so the frontend
+                            // cache matches what the historical loader returns.
+                            final_messages = pipeline_state.finish();
+                        }
+
+                        tracing::info!(
+                            rid = %rid,
+                            outcome = if is_aborted { "aborted" } else { "done" },
+                            event_count,
+                            heartbeat_count,
+                            persisted_turn_count,
+                            elapsed_ms = stream_started_at.elapsed().as_millis(),
+                            persisted,
+                            bad_resume_failure,
+                            "stream: terminal event received"
+                        );
+
+                        if bad_resume_failure {
+                            // End in `Error` (not `Done`) so the frontend's
+                            // error path runs.
+                            let raw = json!({
+                                "type": "error",
+                                "message": BAD_RESUME_USER_MESSAGE,
+                                "internal": false,
+                            });
+                            match turn_session.handle_error(&raw, persisted) {
+                                Ok(actions) => {
+                                    for action in actions {
+                                        actions::apply_action(action, &apply_ctx);
+                                    }
+                                }
+                                Err(err) => {
+                                    tracing::error!(
+                                        rid = %rid,
+                                        error = ?err,
+                                        "bad-resume error transition rejected",
+                                    );
+                                }
+                            }
+                            break;
+                        }
+
+                        match turn_session.handle_end_or_aborted(
+                            is_aborted,
+                            reason,
+                            &resolved_model,
+                            final_messages,
+                            persisted,
+                        ) {
+                            Ok(actions) => {
+                                for action in actions {
+                                    actions::apply_action(action, &apply_ctx);
+                                }
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    rid = %rid,
+                                    error = ?err,
+                                    outcome = if is_aborted { "aborted" } else { "done" },
+                                    "end/aborted transition rejected",
+                                );
+                            }
+                        }
+                        break;
+                    }
+                    "permissionRequest" => {
+                        // Routed through `TurnSession::handle_permission_request`
+                        // — the first event arm migrated to the state machine.
+                        // Late events (after Terminated) are surfaced as a
+                        // tracing error rather than silently dropped.
+                        let raw = event.raw.clone();
+                        if let AgentStreamEvent::PermissionRequest {
+                            permission_id,
+                            tool_name,
+                            ..
+                        } = bridge_permission_request_event(&raw)
+                        {
+                            tracing::debug!(
+                                rid = %rid,
+                                tool = %tool_name,
+                                permission_id = %permission_id,
+                                "Permission request",
+                            );
+                        }
+                        match turn_session.handle_permission_request(&raw) {
+                            Ok(actions) => {
+                                for action in actions {
+                                    actions::apply_action(action, &apply_ctx);
+                                }
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    rid = %rid,
+                                    error = ?err,
+                                    "permissionRequest transition rejected",
+                                );
+                            }
+                        }
+                    }
+                    "planCaptured" => {
+                        // Infrastructure-side prep (DB writes + pipeline flush)
+                        // stays inline because it needs owned access to the
+                        // single-writer DB pool and `&mut MessagePipeline`.
+                        // Once prepared, `turn_session.handle_plan_captured`
+                        // owns the state mutation (`persisted_exit_plan_review`)
+                        // and the Update + PlanCaptured emit sequence.
+                        let tool_use_id = event
+                            .raw
+                            .get("toolUseId")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        let plan_value = event.raw.get("plan").cloned().unwrap_or(Value::Null);
+                        let tool_input = json!({ "plan": plan_value });
+                        tracing::debug!(rid = %rid, tool_use_id = %tool_use_id, "Plan captured");
+
+                        if let Some(pipeline_state) = pipeline.as_mut() {
+                            pipeline_state.accumulator.flush_pending();
+
+                            // Single writer borrow covers turn persistence and
+                            // the exit-plan message write below; only an
+                            // in-memory `resolved_model` read sits between them.
+                            let writer = exchange_ctx
+                                .as_ref()
+                                .and_then(|_| crate::models::db::write_conn().ok());
+
+                            if let (Some(ctx), Some(conn)) =
+                                (exchange_ctx.as_ref(), writer.as_ref())
+                            {
+                                let model_str =
+                                    pipeline_state.accumulator.resolved_model().to_string();
+                                while persisted_turn_count < pipeline_state.accumulator.turns_len()
+                                {
+                                    match persist_turn_message(
+                                        conn,
+                                        ctx,
+                                        pipeline_state.accumulator.turn_at(persisted_turn_count),
+                                        &model_str,
+                                        // Local-sidecar path has no journal seq —
+                                        // 24q-2 only applies to remote-runner.
+                                        None,
+                                    ) {
+                                        Ok(_) => persisted_turn_count += 1,
                                         Err(error) => {
                                             tracing::error!(
                                                 turn = persisted_turn_count,
@@ -1160,7 +896,36 @@ pub(super) fn stream_via_sidecar(
                                 }
                             }
 
-                            match turn_session.handle_stream_event(emit) {
+                            let resolved_model =
+                                pipeline_state.accumulator.resolved_model().to_string();
+                            let persisted_metadata = if let (Some(ctx), Some(conn)) =
+                                (exchange_ctx.as_ref(), writer.as_ref())
+                            {
+                                persist_exit_plan_message(
+                                    conn,
+                                    ctx,
+                                    &resolved_model,
+                                    &tool_use_id,
+                                    "ExitPlanMode",
+                                    &tool_input,
+                                )
+                                .ok()
+                            } else {
+                                None
+                            };
+                            drop(writer);
+                            let (msg_id, created_at) = persisted_metadata.unwrap_or_default();
+                            let plan_message = build_exit_plan_review_message(
+                                (!msg_id.is_empty()).then_some(msg_id),
+                                (!created_at.is_empty()).then_some(created_at),
+                                &tool_use_id,
+                                "ExitPlanMode",
+                                &tool_input,
+                            );
+
+                            let final_messages = pipeline_state.finish();
+
+                            match turn_session.handle_plan_captured(plan_message, final_messages) {
                                 Ok(actions) => {
                                     for action in actions {
                                         actions::apply_action(action, &apply_ctx);
@@ -1170,30 +935,361 @@ pub(super) fn stream_via_sidecar(
                                     tracing::error!(
                                         rid = %rid,
                                         error = ?err,
-                                        "stream_event transition rejected",
+                                        "planCaptured transition rejected",
                                     );
+                                }
+                            }
+                        } else {
+                            // Pipeline was already taken (e.g., terminal
+                            // event arrived first). The frontend still gets
+                            // the bare PlanCaptured marker so its overlay
+                            // doesn't get stuck waiting on it.
+                            let _ = on_event.send(AgentStreamEvent::PlanCaptured {});
+                        }
+                    }
+                    "userInputRequest" => {
+                        // Unified user-input pause. Sources: Claude
+                        // AskUserQuestion (canUseTool), Claude MCP elicitation
+                        // (onElicitation), Codex `requestUserInput`. The
+                        // sidecar has the live SDK callback parked on a
+                        // promise; the SDK process keeps running and the
+                        // pipeline keeps accumulating. We persist any
+                        // complete turns up to this point (crash-safe) and
+                        // emit a snapshot Update + the UserInputRequest
+                        // marker so the frontend overlay shows up at the
+                        // right position. Subsequent stream events flow
+                        // normally once the user submits via
+                        // `respondToUserInput`.
+                        let user_input_id = event
+                            .raw
+                            .get("userInputId")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        let payload_kind = event
+                            .raw
+                            .get("payload")
+                            .and_then(|p| p.get("kind"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown");
+                        tracing::info!(
+                            rid = %rid,
+                            user_input_id = %user_input_id,
+                            payload_kind = %payload_kind,
+                            "AUQ/elicitation userInputRequest received from sidecar",
+                        );
+                        let mut resolved_model = model_copy.cli_model.to_string();
+                        let mut final_messages: Vec<ThreadMessageLike> = Vec::new();
+
+                        if let Some(pipeline_state) = pipeline.as_mut() {
+                            pipeline_state.accumulator.flush_pending();
+
+                            if let (Some(ctx), Some(conn)) = (
+                                exchange_ctx.as_ref(),
+                                crate::models::db::write_conn().ok().as_ref(),
+                            ) {
+                                let model_str =
+                                    pipeline_state.accumulator.resolved_model().to_string();
+                                while persisted_turn_count < pipeline_state.accumulator.turns_len()
+                                {
+                                    match persist_turn_message(
+                                        conn,
+                                        ctx,
+                                        pipeline_state.accumulator.turn_at(persisted_turn_count),
+                                        &model_str,
+                                        // Local-sidecar path has no journal seq —
+                                        // 24q-2 only applies to remote-runner.
+                                        None,
+                                    ) {
+                                        Ok(_) => persisted_turn_count += 1,
+                                        Err(error) => {
+                                            tracing::error!(
+                                                turn = persisted_turn_count,
+                                                "Failed to persist turn: {error}"
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            resolved_model =
+                                pipeline_state.accumulator.resolved_model().to_string();
+                            // `finish()` is non-destructive (a pure render),
+                            // so we keep the pipeline live for the events
+                            // that arrive after the user submits.
+                            final_messages = pipeline_state.finish();
+                        }
+
+                        match turn_session.handle_user_input_request(
+                            &event.raw,
+                            &resolved_model,
+                            final_messages,
+                        ) {
+                            Ok(actions) => {
+                                let emit_count = actions
+                                    .iter()
+                                    .filter(|a| matches!(a, actions::Action::EmitToFrontend(_)))
+                                    .count();
+                                for action in actions {
+                                    actions::apply_action(action, &apply_ctx);
+                                }
+                                tracing::info!(
+                                    rid = %rid,
+                                    user_input_id = %user_input_id,
+                                    emit_count = emit_count,
+                                    "AUQ/elicitation forwarded to frontend",
+                                );
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    rid = %rid,
+                                    error = ?err,
+                                    "userInputRequest transition rejected",
+                                );
+                            }
+                        }
+                    }
+                    "permissionModeChanged" => {
+                        match turn_session.handle_permission_mode_changed(&event.raw) {
+                            Ok(actions) => {
+                                for action in actions {
+                                    actions::apply_action(action, &apply_ctx);
+                                }
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    rid = %rid,
+                                    error = ?err,
+                                    "permissionModeChanged transition rejected",
+                                );
+                            }
+                        }
+                    }
+                    "contextUsageUpdated" => {
+                        match turn_session.handle_context_usage_updated(&event.raw) {
+                            Ok(actions) => {
+                                for action in actions {
+                                    actions::apply_action(action, &apply_ctx);
+                                }
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    rid = %rid,
+                                    error = ?err,
+                                    "contextUsageUpdated transition rejected",
+                                );
+                            }
+                        }
+                    }
+                    "codexGoalUpdated" => {
+                        match turn_session.handle_codex_goal_updated(&event.raw) {
+                            Ok(actions) => {
+                                for action in actions {
+                                    actions::apply_action(action, &apply_ctx);
+                                }
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    rid = %rid,
+                                    error = ?err,
+                                    "codexGoalUpdated transition rejected",
+                                );
+                            }
+                        }
+                    }
+                    "error" => {
+                        // Pre-compute (message, internal) for tracing and DB
+                        // writes. Final emit goes through the state machine
+                        // so the Terminated transition is recorded; a stray
+                        // event after this point is now rejected loudly.
+                        let preview = bridge_error_event(&event.raw, false);
+                        let (message, internal) = match &preview {
+                            AgentStreamEvent::Error {
+                                message, internal, ..
+                            } => (message.clone(), *internal),
+                            _ => unreachable!("bridge_error_event returns Error variant"),
+                        };
+                        tracing::debug!(rid = %rid, internal, "Sidecar error: {message}");
+                        let mut persisted = false;
+
+                        if let (Some(ctx), Some(conn)) =
+                            (&exchange_ctx, &crate::models::db::write_conn().ok())
+                        {
+                            let resolved_model = pipeline
+                                .as_ref()
+                                .map(|pipeline_state| {
+                                    pipeline_state.accumulator.resolved_model().to_string()
+                                })
+                                .unwrap_or_else(|| model_copy.cli_model.to_string());
+
+                            match persist_error_message(conn, ctx, &resolved_model, &message, None)
+                            {
+                                Ok(_) => persisted = true,
+                                Err(error) => {
+                                    tracing::error!(rid = %rid, "Failed to persist error message: {error}");
+                                }
+                            }
+
+                            if let Err(error) = finalize_session_metadata(
+                                conn,
+                                ctx,
+                                "idle",
+                                effort_copy.as_deref(),
+                                turn_session.ctx.permission_mode.as_deref(),
+                            ) {
+                                tracing::error!(rid = %rid, "Failed to finalize error exchange: {error}");
+                            }
+                        }
+
+                        tracing::info!(
+                            rid = %rid,
+                            event_count,
+                            heartbeat_count,
+                            elapsed_ms = stream_started_at.elapsed().as_millis(),
+                            persisted,
+                            internal,
+                            "stream: error event — finalized"
+                        );
+
+                        match turn_session.handle_error(&event.raw, persisted) {
+                            Ok(actions) => {
+                                for action in actions {
+                                    actions::apply_action(action, &apply_ctx);
+                                }
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    rid = %rid,
+                                    error = ?err,
+                                    "error transition rejected",
+                                );
+                            }
+                        }
+                        break;
+                    }
+                    _ => {
+                        // Default arm — covers `stream_event`, `assistant`,
+                        // `result`, `system`, etc. The pipeline accumulator
+                        // owns the dispatch by event type; the state machine
+                        // takes its `PipelineEmit` and decides what to send.
+                        let line = serde_json::to_string(&event.raw).unwrap_or_default();
+                        if !line.is_empty() && line != "{}" {
+                            if let Some(pipeline_state) = pipeline.as_mut() {
+                                let emit = pipeline_state.push_event(&event.raw, &line);
+
+                                if let (Some(ctx), Some(conn)) =
+                                    (&exchange_ctx, &crate::models::db::write_conn().ok())
+                                {
+                                    let model_str =
+                                        pipeline_state.accumulator.resolved_model().to_string();
+                                    while persisted_turn_count
+                                        < pipeline_state.accumulator.turns_len()
+                                    {
+                                        match persist_turn_message(
+                                            conn,
+                                            ctx,
+                                            pipeline_state
+                                                .accumulator
+                                                .turn_at(persisted_turn_count),
+                                            &model_str,
+                                            None,
+                                        ) {
+                                            Ok(_) => {
+                                                persisted_turn_count += 1;
+                                            }
+                                            Err(error) => {
+                                                tracing::error!(
+                                                    turn = persisted_turn_count,
+                                                    "Failed to persist turn: {error}"
+                                                );
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                match turn_session.handle_stream_event(emit) {
+                                    Ok(actions) => {
+                                        for action in actions {
+                                            actions::apply_action(action, &apply_ctx);
+                                        }
+                                    }
+                                    Err(err) => {
+                                        tracing::error!(
+                                            rid = %rid,
+                                            error = ?err,
+                                            "stream_event transition rejected",
+                                        );
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-        }
 
-        tracing::info!(
-            rid = %rid,
-            event_count,
-            heartbeat_count,
-            persisted_turn_count,
-            elapsed_ms = stream_started_at.elapsed().as_millis(),
-            "stream: event loop exited, cleaning up subscription"
+            tracing::info!(
+                rid = %rid,
+                event_count,
+                heartbeat_count,
+                persisted_turn_count,
+                elapsed_ms = stream_started_at.elapsed().as_millis(),
+                "stream: event loop exited"
+            );
+        }));
+
+        // Cleanup MUST run regardless of whether the loop exited
+        // normally or panicked — otherwise the active-streams registry
+        // and the sidecar transport hold stale entries that block the
+        // next stream on this session.
+        let cleanup_active_streams: tauri::State<'_, ActiveStreams> = cleanup_app.state();
+        cleanup_transport.unsubscribe(&cleanup_rid);
+        cleanup_active_streams.unregister(&cleanup_rid);
+        crate::ui_sync::publish(
+            &cleanup_app,
+            crate::ui_sync::UiMutationEvent::ActiveStreamsChanged,
         );
-        transport_for_loop.unsubscribe(&rid);
-        active_streams_state.unregister(&rid);
-        crate::ui_sync::publish(&app, crate::ui_sync::UiMutationEvent::ActiveStreamsChanged);
+
+        if let Err(payload) = loop_outcome {
+            handle_event_loop_panic(&cleanup_rid, &cleanup_channel, payload);
+        }
     });
 
     Ok(())
+}
+
+/// Convert a panic payload caught from the streaming event loop into
+/// a clean `AgentStreamEvent::Error` on the frontend channel + a
+/// tracing event tagged with the stream's request id. Factored out
+/// so the downcast + format shape stays testable with a synthetic
+/// payload that doesn't need a real `tauri::ipc::Channel` connected
+/// to a webview.
+fn handle_event_loop_panic(
+    rid: &str,
+    channel: &tauri::ipc::Channel<AgentStreamEvent>,
+    payload: Box<dyn std::any::Any + Send>,
+) {
+    let detail = downcast_panic_payload(&payload);
+    tracing::error!(
+        rid = rid,
+        panic = %detail,
+        "stream: event loop panicked; emitting internal error to UI"
+    );
+    let _ = channel.send(AgentStreamEvent::Error {
+        message: format!("Stream crashed (internal): {detail}"),
+        persisted: false,
+        internal: true,
+    });
+}
+
+fn downcast_panic_payload(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else {
+        "<non-string panic payload>".to_string()
+    }
 }
 
 /// Build the Helmor system-prompt prefix that gets prepended to the
@@ -1281,4 +1377,37 @@ pub(crate) fn build_helmor_system_prompt_for_workspace(
         cli_command_name,
     };
     Some(build_helmor_system_prompt(&ctx))
+}
+
+#[cfg(test)]
+mod panic_handler_tests {
+    use super::*;
+
+    fn capture_panic_payload<F: FnOnce() + std::panic::UnwindSafe>(
+        f: F,
+    ) -> Box<dyn std::any::Any + Send> {
+        std::panic::catch_unwind(f).expect_err("closure should panic")
+    }
+
+    #[test]
+    fn downcast_extracts_panic_string_payload() {
+        let payload = capture_panic_payload(|| panic!("loop blew up: boom"));
+        let detail = downcast_panic_payload(&payload);
+        assert!(detail.contains("loop blew up: boom"), "got: {detail}");
+    }
+
+    #[test]
+    fn downcast_extracts_panic_static_str_payload() {
+        let payload =
+            capture_panic_payload(|| std::panic::panic_any("static-str panic in stream loop"));
+        let detail = downcast_panic_payload(&payload);
+        assert_eq!(detail, "static-str panic in stream loop");
+    }
+
+    #[test]
+    fn downcast_handles_non_string_payload() {
+        let payload = capture_panic_payload(|| std::panic::panic_any(42_i32));
+        let detail = downcast_panic_payload(&payload);
+        assert_eq!(detail, "<non-string panic payload>");
+    }
 }
