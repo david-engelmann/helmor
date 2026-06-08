@@ -501,7 +501,13 @@ pub(super) fn stream_via_sidecar(
 
                     if let Some(pipeline_state) = pipeline.as_mut() {
                         let notice = bridges::retry_notice_event_from_error(&event.raw);
-                        let line = serde_json::to_string(&notice).unwrap_or_default();
+                        // `notice` is always a `serde_json::Value` built via the
+                        // `json!` macro — `to_string` on a `Value` only fails on
+                        // a custom Serializer error, which can't happen here. The
+                        // catch_unwind boundary around the loop guards against
+                        // the impossible case, so `expect` is honest.
+                        let line = serde_json::to_string(&notice)
+                            .expect("serde_json::Value is always JSON-encodable");
                         let emit = pipeline_state.push_event(&notice, &line);
                         match turn_session.handle_stream_event(emit) {
                             Ok(actions) => {
