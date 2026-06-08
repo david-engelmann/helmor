@@ -466,6 +466,81 @@ fn init_repo_in_container(service: &str, repo_path: &str) {
     );
 }
 
+/// Reconnect-storm chaos test: drop + reconnect the SSH transport in
+/// a tight loop and assert the daemon's RSS doesn't accumulate per-
+/// connection leftovers. Catches the class of bug where each new
+/// connection leaks a daemon-side subscriber, pending-id map, or
+/// transport buffer — invisible to the steady-state soak (which holds
+/// one connection open the whole time).
+///
+/// Gated behind `#[ignore]` so `cargo test --tests` doesn't pay the
+/// per-cycle SSH-handshake wall clock on every push.
+///
+///   cargo test --test remote_docker_e2e reconnect_storm -- \
+///     --ignored --nocapture --test-threads=1
+const RECONNECT_STORM_CYCLES: u64 = 10;
+const RECONNECT_STORM_RSS_BUDGET_BYTES: u64 = 32 * 1024 * 1024; // 32 MB peak growth across 10 reconnects
+
+#[test]
+#[ignore = "soak: gated, run via `cargo test reconnect_storm -- --ignored --nocapture`"]
+fn reconnect_storm_against_linux_container() {
+    if !enabled() {
+        eprintln!("skipping reconnect-storm (set {ENABLE_ENV}=1 to run)");
+        return;
+    }
+    let harness = DockerHarness::up();
+    let repo_path = "/home/e2e/e2e-reconnect-repo";
+    init_repo_in_container(harness.service, repo_path);
+
+    // Baseline RSS *before* the first connect — measured with the
+    // daemon definitely up because the soak harness's image bootstrap
+    // leaves it running.
+    let initial_rss = sample_daemon_rss(harness.service);
+    eprintln!("reconnect-storm start — initial daemon RSS: {initial_rss} bytes");
+
+    let mut peak_rss = initial_rss;
+    let mut connect_elapsed_samples: Vec<Duration> =
+        Vec::with_capacity(RECONNECT_STORM_CYCLES as usize);
+
+    for cycle in 1..=RECONNECT_STORM_CYCLES {
+        let connect_start = std::time::Instant::now();
+        let runtime = RemoteSshRuntime::connect_ssh(harness.host_alias(), REMOTE_BINARY)
+            .unwrap_or_else(|err| panic!("connect_ssh failed on cycle {cycle}: {err:#}"));
+        connect_elapsed_samples.push(connect_start.elapsed());
+
+        let status = runtime
+            .workspace_status(Path::new(repo_path))
+            .unwrap_or_else(|err| panic!("workspace_status failed on cycle {cycle}: {err:#}"));
+        assert!(
+            status.is_clean,
+            "cycle {cycle}: workspace should report clean, got {status:?}"
+        );
+
+        // Dropping `runtime` closes the writer + child + reader.
+        // This is the path that's been historically leak-prone.
+        drop(runtime);
+
+        let now_rss = sample_daemon_rss(harness.service);
+        peak_rss = peak_rss.max(now_rss);
+        eprintln!(
+            "reconnect-storm cycle={cycle} now_rss={now_rss} peak_rss={peak_rss} (initial={initial_rss})"
+        );
+    }
+
+    let (p50, p95, p99) = compute_latency_percentiles(&mut connect_elapsed_samples);
+    let growth = peak_rss.saturating_sub(initial_rss);
+    eprintln!(
+        "reconnect-storm done — {RECONNECT_STORM_CYCLES} cycles, peak RSS {peak_rss}, initial RSS {initial_rss}, growth {growth} bytes; connect latency p50={}ms p95={}ms p99={}ms",
+        p50.as_millis(),
+        p95.as_millis(),
+        p99.as_millis(),
+    );
+    assert!(
+        growth < RECONNECT_STORM_RSS_BUDGET_BYTES,
+        "daemon RSS grew {growth} bytes across {RECONNECT_STORM_CYCLES} reconnect cycles — per-connection leak suspected (budget {RECONNECT_STORM_RSS_BUDGET_BYTES} bytes; initial {initial_rss}, peak {peak_rss})",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // percentile helper unit tests — exercised without the docker harness so they
 // run on every `cargo test --tests` push, not just the soak workflow.

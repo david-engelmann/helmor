@@ -98,3 +98,18 @@ jobs:
           cargo test --test remote_docker_e2e \
             soak_workspace_status_against_linux_container \
             -- --ignored --nocapture --test-threads=1
+
+      - name: Run the reconnect-storm chaos test
+        working-directory: src-tauri
+        env:
+          HELMOR_E2E_DOCKER: "1"
+          HELMOR_E2E_DOCKER_SERVICE: ${{ matrix.service }}
+          RUSTC_WRAPPER: ""
+        run: |
+          # Different bug class from the soak — one long-lived connection
+          # vs. 10 reconnects in a row. Daemon RSS leaks tied to per-
+          # connection state (subscriber piles, pending-id maps) show up
+          # here but not in the soak.
+          cargo test --test remote_docker_e2e \
+            reconnect_storm_against_linux_container \
+            -- --ignored --nocapture --test-threads=1
