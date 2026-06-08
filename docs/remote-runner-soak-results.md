@@ -2,9 +2,14 @@
 
 `remote-server-soak.yml` hammers `workspace_status` against the Linux
 daemon container for 5 minutes per arch, sampling daemon RSS every
-100 iterations. Asserts peak RSS growth < 64 MB. Manual-dispatch
-only — these are point-in-time data points, not a continuous CI
-signal.
+100 iterations and capturing per-call round-trip latency for
+P50 / P95 / P99 reporting. Asserts peak RSS growth < 64 MB.
+Manual-dispatch only — these are point-in-time data points, not a
+continuous CI signal.
+
+The latency capture was added after `59cf3776` (commit landing this
+change) — earlier runs reported throughput-only numbers; the next
+manual dispatch will be the first run with percentile signal.
 
 ## 2026-06-03 — `59cf3776`
 

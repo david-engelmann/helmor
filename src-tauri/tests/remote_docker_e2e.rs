@@ -365,11 +365,18 @@ fn soak_workspace_status_against_linux_container() {
 
     let mut peak_rss = initial_rss;
     let mut iterations = 0u64;
+    // Per-iteration round-trip elapsed times for latency percentiles.
+    // 8 bytes/sample × ~100k samples over a 5-min run = ~800 KB —
+    // negligible vs. the daemon's 64 MB budget and well worth the
+    // P50 / P95 / P99 signal it gives us.
+    let mut elapsed_samples: Vec<Duration> = Vec::with_capacity(150_000);
     let deadline = std::time::Instant::now() + Duration::from_secs(SOAK_DURATION_SECS);
     while std::time::Instant::now() < deadline {
+        let call_start = std::time::Instant::now();
         let _ = runtime
             .workspace_status(Path::new(repo_path))
             .expect("workspace.status round-trip during soak");
+        elapsed_samples.push(call_start.elapsed());
         iterations += 1;
 
         // Sample every 100 iters — cheap, and we don't want sampling
@@ -383,15 +390,37 @@ fn soak_workspace_status_against_linux_container() {
         }
     }
 
+    let (p50, p95, p99) = compute_latency_percentiles(&mut elapsed_samples);
     eprintln!(
-        "soak done — {iterations} iterations, peak RSS {peak_rss}, initial RSS {initial_rss}, growth {} bytes",
-        peak_rss.saturating_sub(initial_rss)
+        "soak done — {iterations} iterations, peak RSS {peak_rss}, initial RSS {initial_rss}, growth {} bytes; latency p50={}µs p95={}µs p99={}µs",
+        peak_rss.saturating_sub(initial_rss),
+        p50.as_micros(),
+        p95.as_micros(),
+        p99.as_micros(),
     );
     assert!(
         peak_rss.saturating_sub(initial_rss) < SOAK_RSS_GROWTH_BUDGET_BYTES,
         "daemon RSS grew {} bytes during soak — leak suspected (budget {SOAK_RSS_GROWTH_BUDGET_BYTES} bytes; initial {initial_rss}, peak {peak_rss})",
         peak_rss.saturating_sub(initial_rss),
     );
+}
+
+/// Sort the elapsed-time samples in place and return (p50, p95, p99).
+/// Quantile = "nearest-rank" on the sorted array — closest match for
+/// the soak's `eprintln!` line is more about being comparable across
+/// runs than statistically precise.
+fn compute_latency_percentiles(samples: &mut [Duration]) -> (Duration, Duration, Duration) {
+    if samples.is_empty() {
+        return (Duration::ZERO, Duration::ZERO, Duration::ZERO);
+    }
+    samples.sort_unstable();
+    let pick = |p: f64| -> Duration {
+        let idx = ((samples.len() as f64 * p).ceil() as usize)
+            .saturating_sub(1)
+            .min(samples.len() - 1);
+        samples[idx]
+    };
+    (pick(0.50), pick(0.95), pick(0.99))
 }
 
 /// Read the daemon's RSS from inside the container. `daemon.pid`
@@ -435,4 +464,58 @@ fn init_repo_in_container(service: &str, repo_path: &str) {
         "git init in container failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+// ---------------------------------------------------------------------------
+// percentile helper unit tests — exercised without the docker harness so they
+// run on every `cargo test --tests` push, not just the soak workflow.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod percentile_tests {
+    use super::compute_latency_percentiles;
+    use std::time::Duration;
+
+    #[test]
+    fn empty_samples_return_zero_durations() {
+        let mut s: Vec<Duration> = vec![];
+        let (p50, p95, p99) = compute_latency_percentiles(&mut s);
+        assert_eq!(p50, Duration::ZERO);
+        assert_eq!(p95, Duration::ZERO);
+        assert_eq!(p99, Duration::ZERO);
+    }
+
+    #[test]
+    fn single_sample_collapses_all_percentiles() {
+        let mut s = vec![Duration::from_millis(7)];
+        let (p50, p95, p99) = compute_latency_percentiles(&mut s);
+        assert_eq!(p50, Duration::from_millis(7));
+        assert_eq!(p95, Duration::from_millis(7));
+        assert_eq!(p99, Duration::from_millis(7));
+    }
+
+    #[test]
+    fn percentiles_track_nearest_rank() {
+        // 100 samples = 1ms .. 100ms — nearest-rank on a sorted
+        // array gives exactly the percentile-numbered sample.
+        let mut s: Vec<Duration> = (1..=100).map(Duration::from_millis).collect();
+        let (p50, p95, p99) = compute_latency_percentiles(&mut s);
+        assert_eq!(p50, Duration::from_millis(50));
+        assert_eq!(p95, Duration::from_millis(95));
+        assert_eq!(p99, Duration::from_millis(99));
+    }
+
+    #[test]
+    fn percentiles_sort_unsorted_input() {
+        let mut s = vec![
+            Duration::from_millis(99),
+            Duration::from_millis(1),
+            Duration::from_millis(50),
+            Duration::from_millis(20),
+            Duration::from_millis(95),
+        ];
+        let (p50, _p95, p99) = compute_latency_percentiles(&mut s);
+        assert_eq!(p50, Duration::from_millis(50));
+        assert_eq!(p99, Duration::from_millis(99));
+    }
 }
