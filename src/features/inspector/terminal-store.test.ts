@@ -137,7 +137,7 @@ describe("terminal-store dispatch", () => {
 		const instance = createTerminal(
 			"repo-1",
 			"ws-remote",
-			"/Users/david/laptop/path",
+			"/home/user/laptop/path",
 		);
 		expect(instance).not.toBeNull();
 		if (!instance) return;

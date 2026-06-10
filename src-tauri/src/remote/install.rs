@@ -69,9 +69,8 @@ const PROBE_SSH_ARGS: &[&str] = &["-o", "BatchMode=yes"];
 
 /// GitHub repo to pull `helmor-server` releases from. Defaults to the
 /// upstream; overridable at build time so a fork's release pipeline
-/// (e.g. `david-engelmann/helmor`) can flow through without code
-/// changes. Set via `HELMOR_RELEASE_REPO=<org>/<repo>` during
-/// `cargo build`.
+/// (e.g. `<your-org>/helmor`) can flow through without code changes.
+/// Set via `HELMOR_RELEASE_REPO=<org>/<repo>` during `cargo build`.
 pub const RELEASE_REPO: &str = match option_env!("HELMOR_RELEASE_REPO") {
     Some(repo) => repo,
     None => "dohooo/helmor",
