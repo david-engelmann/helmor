@@ -129,8 +129,8 @@ pub enum Method {
     /// secrets store. The daemon persists it to
     /// `$HOME/.helmor/server/secrets.json` (mode 0600) and hot-
     /// pushes it to the live sidecar via its `updateConfig` RPC.
-    /// Keys never persist on the desktop side — phase 23d's
-    /// design intent is "auth lives remote-only".
+    /// Keys never persist on the desktop side — the design intent
+    /// is "auth lives remote-only".
     AgentSetAuth,
     /// Track G2 read side: snapshot which providers have a key
     /// configured on the daemon. Returns presence bits + optional
@@ -800,12 +800,12 @@ impl RpcMethod for ForgeExecMethod {
 // ── workspace.fileTree / .changes / .readFile / .readFileAtRef ────
 // ── workspace.statFile / .mutateFile ──────────────────────────────
 //
-// These six methods make up phase 20's inspector lift. The result
-// types re-use the existing `workspace::files::types` shapes —
-// adding `Deserialize` + `PartialEq` to those types in phase 20 was
-// enough; the wire IS that contract. Method-local Params + Result
-// wrappers sit here so adding a future field (paging, filter,
-// reflog-style metadata) doesn't churn the inspector's local types.
+// These six methods make up the inspector lift. The result types
+// re-use the existing `workspace::files::types` shapes — adding
+// `Deserialize` + `PartialEq` to those types was enough; the wire
+// IS that contract. Method-local Params + Result wrappers sit here
+// so adding a future field (paging, filter, reflog-style metadata)
+// doesn't churn the inspector's local types.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -964,7 +964,7 @@ impl RpcMethod for WorkspaceMutateFileMethod {
     type Result = WorkspaceMutateFileResult;
 }
 
-// ── workspace.search (phase 24e) ────────────────────────────────────
+// ── workspace.search ────────────────────────────────────────────────
 //
 // `git grep` on the daemon side. Honors `.gitignore` for free,
 // surfaces binary-file skipping via `-I`, and stays within the
@@ -1034,7 +1034,7 @@ impl RpcMethod for WorkspaceSearchMethod {
     type Result = WorkspaceSearchResult;
 }
 
-// ── workspace.startWatch / stopWatch (phase 24f — wire shape) ────────
+// ── workspace.startWatch / stopWatch (wire shape) ───────────────────
 //
 // Defines the wire vocabulary for a future remote file watcher. The
 // kernel — [`crate::workspace::files::FileWatcher`] — is shipped
@@ -1376,7 +1376,7 @@ pub struct WorkspaceFileEventNotification {
 /// JSON-RPC method name for [`WorkspaceFileEventNotification`].
 pub const WORKSPACE_FILE_EVENT_METHOD: &str = "workspace.fileEvent";
 
-// ── agent.send / agent.abort / agent.list / agent.attach (phase 23a) ──
+// ── agent.send / agent.abort / agent.list / agent.attach ────────────
 //
 // `SidecarRequest` is the existing local-sidecar envelope (id + method
 // + params). For the remote case the desktop forwards that envelope
@@ -1926,7 +1926,7 @@ mod tests {
         assert_eq!(restored, result);
     }
 
-    // ── workspace.* (phase 20a) wire shapes ──────────────────────
+    // ── workspace.* wire shapes ───────────────────────────────────
 
     use crate::workspace::files::{
         EditorFileListItem, EditorFilePrefetchItem, EditorFileReadResponse, EditorFileStatResponse,
@@ -2128,7 +2128,7 @@ mod tests {
         assert!(wire.contains("\"mtimeMs\":1700000000000"));
     }
 
-    // ── workspace.search wire shapes (phase 24e) ──────────────────
+    // ── workspace.search wire shapes ──────────────────────────────
 
     #[test]
     fn workspace_search_params_round_trip_with_camel_case_keys() {
@@ -2215,7 +2215,7 @@ mod tests {
         assert_eq!(Method::WorkspaceSearch.as_str(), "workspace.search");
     }
 
-    // ── workspace.startWatch / stopWatch wire shapes (phase 24f) ──
+    // ── workspace.startWatch / stopWatch wire shapes ──────────────
 
     #[test]
     fn workspace_start_watch_params_round_trip_with_camel_case() {
@@ -2282,7 +2282,7 @@ mod tests {
         assert_eq!(WORKSPACE_FILE_EVENT_METHOD, "workspace.fileEvent");
     }
 
-    // ── agent.* wire shapes (phase 23a) ───────────────────────────
+    // ── agent.* wire shapes ───────────────────────────────────────
 
     #[test]
     fn agent_send_params_forward_raw_sidecar_payload_with_camel_case() {
@@ -2444,11 +2444,11 @@ mod tests {
 
     #[test]
     fn agent_event_notification_wraps_raw_sidecar_payload() {
-        // The whole point of phase 23 is that the desktop's existing
-        // accumulator sees byte-identical SidecarEvent JSON whether
-        // the workspace is local or remote. This test wedges that
-        // contract: the `event` field is the raw JSON, untouched by
-        // the wrapping.
+        // The whole point of the agent.* wire shape is that the
+        // desktop's existing accumulator sees byte-identical
+        // SidecarEvent JSON whether the workspace is local or
+        // remote. This test wedges that contract: the `event` field
+        // is the raw JSON, untouched by the wrapping.
         let inner = serde_json::json!({
             "id": "req-4",
             "type": "assistant",

@@ -56,7 +56,7 @@ pub const REMOTE_INSTALL_BINARY: &str = "$HOME/.helmor/server/helmor-server";
 /// desktop, daemon, and CLI all share one version). The install
 /// gate treats any remote daemon older than this as drift and
 /// triggers a reinstall — that's what propagates *behavior* fixes
-/// (e.g. PR #28's `result`-vs-`end` event handling) which don't
+/// (e.g. the daemon's `result`-vs-`end` event handling) which don't
 /// touch [`super::PROTOCOL_VERSION`] but still require a fresher
 /// binary on the wire.
 pub const EXPECTED_BINARY_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -348,7 +348,8 @@ pub fn daemon_version_is_older(daemon_version: &str, desktop_version: &str) -> b
 ///   desktop isn't drift the desktop should flatten). Older than the
 ///   desktop, or an unparseable version line, fires reinstall. This
 ///   is what catches behavior-only fixes that don't bump the
-///   protocol (PR #28 was the motivating case).
+///   protocol (the daemon's `result`-vs-`end` event handling was
+///   the motivating case).
 fn version_matches_expectations(
     probed: &ProbedVersion,
     expected_protocol: &str,
@@ -1060,9 +1061,9 @@ mod tests {
 
     #[test]
     fn version_matches_expectations_rejects_an_older_remote_binary() {
-        // The motivating case: PR #28 (behavior-only fix) means a
-        // remote at any earlier version is missing the fix, even
-        // though the protocol still matches.
+        // The motivating case: a behavior-only fix in the daemon
+        // means a remote at any earlier version is missing the fix,
+        // even though the protocol still matches.
         let probed = ProbedVersion {
             binary_version: "helmor-server 0.0.1".into(),
             protocol_version: Some(super::super::PROTOCOL_VERSION.to_string()),
@@ -1103,9 +1104,10 @@ mod tests {
     }
 
     /// End-to-end check that an older binary at the requested path
-    /// flows through to the install branch. This is the bug PR #28
-    /// surfaced — the manual cross-build + docker cp dance happened
-    /// because a protocol-match-only gate kept the stale binary.
+    /// flows through to the install branch. The motivating bug: a
+    /// protocol-match-only gate kept a stale binary on the remote
+    /// even after a desktop release that bumped behavior but not the
+    /// protocol, forcing a manual cross-build + docker cp dance.
     #[test]
     fn ensure_reinstalls_when_requested_binary_is_older_than_desktop() {
         let runner = RecordingRunner::default();
