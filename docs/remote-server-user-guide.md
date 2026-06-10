@@ -305,9 +305,10 @@ version than the desktop expected. Usually means the release tag for
 your desktop's protocol doesn't exist yet on the configured release
 repo. Two fixes:
 
-- Use the fork's release repo:
+- Point the install gate at a release repo that does have a matching
+  tag:
   ```bash
-  HELMOR_RELEASE_REPO=david-engelmann/helmor cargo build
+  HELMOR_RELEASE_REPO=<your-org>/helmor cargo build
   ```
 - Or fall back to the scp path while the release lands:
   ```bash

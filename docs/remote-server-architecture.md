@@ -385,11 +385,11 @@ cmdkey /list:helmor*
 # → Target: helmor:cursor (or similar — the format varies by Windows version)
 ```
 
-The fork's release pipeline cross-builds the `helmor-server`
-binary on Linux x86_64 + aarch64 via `cross`; the desktop bundle
-itself remains macOS-only today but the keychain code is already
-wired so a future Linux / Windows bundle inherits the vault path
-without a refactor.
+The release pipeline cross-builds the `helmor-server` binary on
+Linux x86_64 + aarch64 via `cross`; the desktop bundle itself
+remains macOS-only today but the keychain code is already wired so
+a future Linux / Windows bundle inherits the vault path without a
+refactor.
 
 ## 10. Per-runtime auth (Track G)
 

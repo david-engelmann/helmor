@@ -371,9 +371,9 @@ To exercise just the remote module — faster than the full lib suite
 
 ## Commit / PR convention
 
-- One PR per phase / capability slice. The fork's history follows the
-  pattern `remote-runner phase 24X: <summary>` — keep that going so
-  the next contributor can grep for the phase boundary.
+- One PR per capability slice (a new RPC method + its wire types +
+  its caller-side wrapper, for example). Smaller is better — easier
+  to review, easier to revert.
 - Stack PRs that depend on each other (base another PR's head branch
   rather than `main`). GitHub auto-rebases when the parent merges.
 - Every PR that touches `src-tauri/src/remote/` or `agents/` must

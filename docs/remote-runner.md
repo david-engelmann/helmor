@@ -236,8 +236,10 @@ the discovery if you want to keep them outside the source tree.
 
 ## Demos
 
-Captioned video walkthroughs of every claim above live in the
-`helmor-taper` repo under `docs/tapes/`. The headless probes the
-videos run on top of are in `helmor-taper/scripts/probe-*.ts` —
-each one is a runnable contract that can re-verify the feature from
-scratch without recording anything.
+End-to-end recordings + headless feature probes for every claim
+above are produced by a sibling tooling project (a separate Rust
+crate that drives the Helmor desktop through its MCP bridge and
+captures the screen via ScreenCaptureKit). The probes are runnable
+contracts that can re-verify each feature from scratch without
+recording — useful for CI smoke checks against a real remote
+without committing video artefacts to this repo.
