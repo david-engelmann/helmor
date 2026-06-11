@@ -950,7 +950,7 @@ export const WorkspaceComposerContainer = memo(
 
 		// Debug-only test hook: exposes the currently-mounted composer's
 		// submit handler on `window.__helmorTest` so an external driver
-		// (helmor-taper's recorder, e2e tests, the dev-tools console)
+		// (an e2e test runner, a recording tool, the dev-tools console)
 		// can fire a chat send through the EXACT code path the Send
 		// button uses — including the codex `/goal` interception, the
 		// model/permission/effort/fast-mode capture, and the streaming

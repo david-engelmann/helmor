@@ -204,7 +204,7 @@ describe("script-store dispatch (remote runtime)", () => {
 			{
 				workspaceId: "ws-remote",
 				runtimeName: "docker-linux-arm64",
-				remotePath: "/home/e2e/helmor-workspaces/helmor-taper",
+				remotePath: "/home/e2e/helmor-workspaces/sample-repo",
 			},
 		]);
 		let remoteCallback: ((e: TerminalEventNotification) => void) | null = null;
@@ -228,7 +228,7 @@ describe("script-store dispatch (remote runtime)", () => {
 		expect(apiMocks.openRemoteTerminal).toHaveBeenCalledWith(
 			"docker-linux-arm64",
 			expect.any(String),
-			"/home/e2e/helmor-workspaces/helmor-taper",
+			"/home/e2e/helmor-workspaces/sample-repo",
 			expect.objectContaining({ command: "bun run dev" }),
 		);
 		expect(apiMocks.executeRepoScript).not.toHaveBeenCalled();

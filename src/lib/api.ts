@@ -1224,7 +1224,7 @@ export async function reinstallRemoteDaemon(
  * Already called automatically by `connect_remote_runtime` on first
  * connect; the manual entry point exists so the Remote Servers panel
  * can offer a "Reinstall bundle" affordance, and so headless probes
- * (helmor-taper / e2e tests) can trigger it deterministically.
+ * (e2e tests, recording tools) can trigger it deterministically.
  *
  * The install emits `RemoteBundleInstall{Progress,Complete,Failed}`
  * UI mutation events the panel subscribes to via

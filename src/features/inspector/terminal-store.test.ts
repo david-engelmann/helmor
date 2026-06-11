@@ -121,7 +121,7 @@ describe("terminal-store dispatch", () => {
 			{
 				workspaceId: "ws-remote",
 				runtimeName: "docker-linux-arm64",
-				remotePath: "/home/e2e/helmor-workspaces/helmor-taper",
+				remotePath: "/home/e2e/helmor-workspaces/sample-repo",
 			},
 		]);
 
@@ -150,7 +150,7 @@ describe("terminal-store dispatch", () => {
 		expect(apiMocks.openRemoteTerminal).toHaveBeenCalledWith(
 			"docker-linux-arm64",
 			instance.id,
-			"/home/e2e/helmor-workspaces/helmor-taper",
+			"/home/e2e/helmor-workspaces/sample-repo",
 			expect.objectContaining({
 				cols: expect.any(Number),
 				rows: expect.any(Number),
