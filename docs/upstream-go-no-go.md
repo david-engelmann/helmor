@@ -7,19 +7,34 @@ upstream-bound diff via path filter).
 
 **Question:** is the PR ready to open against `dohooo/helmor`?
 
-**Verdict: NO-GO on the PR. GO on the discussion issue.**
+**Verdict: technically GO. Operator's call when / whether to open it.**
 
-**Update (2026-06-11):** rebase attempted in this session; the
-mechanical work is done (squash-merge + union-resolve + restore
-deletions + drop fork meta + consolidate changeset + transform
-soak doc), but cargo surfaces ~5+ semantic conflicts that need real
-schema/contract understanding to resolve — they go beyond
-mechanical brace-balancing. WIP state preserved on the
-`upstream-pr/remote-runtime` branch (commit `b692295b`, local only,
-not pushed) so a future focused session can pick it up. Final
-verdict unchanged: open the issue first.
+**Update (2026-06-11, late session):** rebase fully completed.
+Branch `fork/upstream-pr/remote-runtime` at commit `67c539bf` is
+the clean, test-passing, single-commit upstream-bound diff. All
+test suites green from the rebased branch:
 
-Detail below.
+- Cargo lib tests: 2003 passed (2 pre-existing kill_* flakes pass
+  serially with `--test-threads=1`).
+- Cargo integration tests: 15/15 (`remote_binary_integration.rs`)
+  + soak/chaos `#[ignore]`-gated as designed.
+- Vitest: 1603/1603 across 148 files.
+- Sidecar (`bun test`): 268/268.
+- Clippy `--all-targets -D warnings`: 0 warnings.
+- Biome `check src/`: clean.
+
+Diff stat against `origin/main`: 236 files, +67 877 / -2 821.
+Single conventional-commits commit with `feat(remote):` title +
+full architecture write-up in the body.
+
+Per the standing memory rule (`feedback_helmor_pr_target.md`),
+the branch is NOT pushed to `origin = dohooo/helmor`, no issue /
+discussion / PR opened upstream. The branch lives at
+`https://github.com/david-engelmann/helmor/tree/upstream-pr/remote-runtime`
+on the fork only. Opening anything upstream is the operator's
+explicit call, not an automatic next step.
+
+Rebase walkthrough below.
 
 ## Headline finding
 
@@ -91,140 +106,52 @@ verification needs to:
   added wrapper functions there
 - Re-run clippy + biome from the rebased branch
 
-## Forward paths
+## Forward paths (historical — Path A was taken)
 
-### Path A — Rebase first, then open both issue and PR together
+Three paths were laid out earlier in U8. The operator chose Path A
+(do the rebase first). The other two are kept here for record.
 
-1. Resolve the 9 conflict files manually. Per-file effort: ~10–30
-   minutes if each conflict is "take both sides." Total: ~2–4 hours.
-2. Run clippy + biome + cargo test + bun run test from the
-   rebased branch. Fix any cascading breakage.
-3. Re-read the PR body to confirm file paths + LOC counts still
-   match (a Smart Triage rebase may shift the diff's character —
-   if anything, it grows because triage code now lives alongside
-   our additions).
-4. Open the issue.
-5. Wait for maintainer ack on the issue.
-6. Open the PR.
+### Path A — Rebase first, then open both issue and PR together [TAKEN]
 
-**Pros:** end state is one self-contained ship.
-**Cons:** front-loads several hours of rebase work BEFORE getting
-any maintainer signal on whether the scope is welcome. If a
-maintainer says "stay in your fork", the rebase work was wasted.
+The chosen path. Completed in-session. See "Rebase walkthrough"
+below for the actual work.
 
 ### Path B — Open the issue NOW, rebase if and when maintainer says go
 
-1. **Today:** open the GitHub issue using `docs/upstream-issue-body.md`.
-   Tags `@dohooo` and `@natllian`. Asks two specific yes/no
-   questions. No code change required.
-2. Wait for maintainer response (or a reasonable amount of time
-   before bumping).
-3. **If maintainer says "yes, open the PR":** do the rebase in a
-   focused session. Open the PR.
-4. **If maintainer says "stay in your fork":** close the issue
-   gracefully; archive the prep work; no rebase needed.
-5. **If maintainer says "smaller PR please":** fall back to the
-   12-PR breakdown in `docs/upstream-prs-planned.md`, plus the
-   per-PR rebase work.
-
-**Pros:** Spends 5 minutes (open the issue) before the next
-several hours of work. Surfaces "is this welcome?" before
-committing to the rebase. Honest about the state of the diff.
-**Cons:** Maintainer might want to see the actual diff before
-giving an opinion. We can mitigate by linking to the fork's main
-branch directly in the issue ("here's the working code if you'd
-rather look at the implementation first").
+Not taken — operator explicitly opted to fix the code locally
+rather than ask the maintainer ("do not create a issue or pr or
+discussion in the main repo, fix your fucking code").
 
 ### Path C — Open the issue + start the rebase in parallel
 
-1. **Today:** open the issue (same as B-1).
-2. **In parallel:** start the rebase work. By the time the
-   maintainer responds, the PR is ready to open if they say go.
-3. If the maintainer redirects scope, the partial rebase informs
-   the redirect.
+Not taken — same reason as Path B.
 
-**Pros:** Best of both — maintainer signal AND code-ready
-parallel. **Cons:** wastes rebase work if maintainer hard-stops.
+## Pre-issue / pre-PR checklists — DONE
 
-## Recommendation
+Both checklists from the earlier draft were completed in this
+session. The fork branch `upstream-pr/remote-runtime` already
+contains the rebased, test-passing, single-commit upstream-bound
+diff. Per the standing memory rule, no issue / discussion / PR has
+been opened upstream and none will be without operator approval.
 
-**Path B.** Reasons:
+If the operator later asks to open the upstream PR, the only
+remaining work would be:
 
-1. The issue thread is the cheapest possible probe of "is this
-   scope welcome." 280 words and a button-click.
-2. The rebase is bounded but real (~2–4 hours). Wasting it on a
-   "stay in your fork" response is the worst outcome.
-3. The fork's main branch is publicly readable. If the maintainer
-   wants to see the implementation before answering, the link is
-   right there in the issue body.
-4. Path C is fine if you have the time and want to compress the
-   calendar — but it doesn't change the worst-case outcome.
-
-## Pre-issue checklist
-
-Before opening the issue (Path B):
-
-- [ ] **Re-verify maintainer handles still active.** Look at the
-      last 5 merged PRs on `origin/main` to confirm `@dohooo` and
-      `@natllian` are still the reviewers-of-record. Recheck the
-      issue body's tagging line if anything changed.
-- [ ] **Re-confirm helmor-taper v0.1.0 link is live.** The issue
-      body links to it.
-- [ ] **Final read of `docs/upstream-issue-body.md`.** Two
-      minutes; catch anything that aged poorly.
-- [ ] **Final read of `docs/upstream-pr-body.md`.** Linked from
-      the issue ("PR body is drafted and ready"). Five minutes;
-      catch anything that aged poorly.
-- [ ] **Operator approval.** Explicit "yes, open the issue."
-
-## Pre-PR checklist (when Path B's issue gets a green light)
-
-- [ ] **Pull latest `origin/main`** (in a fresh session). Re-check
-      whether any further upstream PRs landed that change the
-      rebase footprint.
-- [ ] **Build the rebased branch:**
-      - `git switch -c upstream-pr/remote-runtime origin/main`
-      - `git merge --squash main`
-      - Resolve the (likely 9, possibly more) content conflicts.
-      - Stage everything; do NOT commit yet.
-- [ ] **Apply path exclusions** per `docs/upstream-docs-disposition.md`:
-      - `docs/PR-OVERVIEW.md`
-      - `docs/cli-ipc-evidence.md`
-      - `docs/pi-backend-contribution-roadmap.md`
-      - `docs/plans/`
-      - `docs/send-disable-evidence/`
-      - `docs/upstream-prep-plan.md` + every other `docs/upstream-*.md` + `docs/upstream-*.json`
-      - All 35 `.changeset/*.md` files
-      - All `.announcements/*.json` files
-      - `.github/workflows/release-plan.yml`
-- [ ] **Apply the soak-results transform** per U3 recipe (`docs/upstream-docs-disposition.md` § Deferred transform).
-- [ ] **Apply the consolidated changeset** from
-      `docs/upstream-changeset-draft.md` as
-      `.changeset/remote-runtime.md`.
-- [ ] **Apply the consolidated announcement** from
-      `docs/upstream-announcement-draft.json` as
-      `.announcements/remote-workspaces.json` (strip the
-      reviewer-comment field).
-- [ ] **Restore the 41 fork-only deletions** from `origin/main`
-      so triage/lark/sidecar_host/etc. survive intact.
-- [ ] **Verify the rebased branch builds:**
-      ```
-      cd src-tauri && cargo clippy --all-targets -- -D warnings
-      cd /Users/david/personal/helmor && bun x biome check .
-      bun run test
-      cd src-tauri && cargo test --tests
-      ```
-- [ ] **Commit as a single squashed commit** with the
-      conventional-commits title (per `docs/upstream-conventions.md`):
-      `feat(remote): route workspaces through a pluggable runtime so they can live on a remote machine`.
-- [ ] **Push to the fork** under a clearly-named branch:
-      `david-engelmann/helmor:upstream-pr/remote-runtime`.
-- [ ] **Open the PR** against `dohooo/helmor:main` from that
-      branch.
-- [ ] **Body:** copy `docs/upstream-pr-body.md` (excluding the
-      "Status:" preamble) as the PR description.
-- [ ] **Link the issue** in the PR description.
-- [ ] **Self-review** the PR view on GitHub before requesting
+- [ ] **Re-check `origin/main` for new commits since `67c539bf`.**
+      If `dohooo/main` shipped further PRs that touch our 9
+      conflict files (or any restored file), fold them in
+      (rebase-on-top, not merge-on-top).
+- [ ] **Re-run all four test suites from the rebased branch** to
+      confirm nothing else regressed.
+- [ ] **Verify on GitHub that the branch's diff still reads
+      reasonably**: 236 files / +67 877 / -2 821 was the post-rebase
+      stat. Smart Triage-era additions on `origin/main` may shift
+      this.
+- [ ] **Open the PR with `--repo dohooo/helmor --base main --head
+      david-engelmann:upstream-pr/remote-runtime`**. Body =
+      `docs/upstream-pr-body.md` (strip the "Status:" preamble).
+      Use the `--body-file` form.
+- [ ] **Self-review the PR view on GitHub** before requesting
       review.
 
 ## What's still good (independent of rebase)
@@ -266,110 +193,127 @@ Findings:
 | Manual fix in `agents/streaming/mod.rs`: missing closing braces, duplicate `build_exit_plan_review_message` | ✅ |
 | `cargo fmt --all` | ✅ |
 
-### Beyond mechanical — needs schema/contract understanding
+### Beyond mechanical — resolved in this session
 
-`cargo check` after the mechanical pass surfaces ~5 semantic conflicts.
-Each goes beyond union-merge's ability to resolve:
+`cargo check` after the mechanical pass surfaced 5 semantic
+conflicts that needed real schema/contract understanding. All
+fixed below, ordered by fix-impact (the first one alone unblocked
+320 of 322 test failures):
 
-1. **`models/workspaces.rs:851-855`** — duplicate
+1. **`schema.rs:1057-1058`** — duplicate `created_at TEXT NOT
+   NULL DEFAULT (datetime('now'))` line in the
+   `CREATE TABLE session_messages` block, missing the trailing
+   comma. Fresh-schema init failed at offset 250 of the schema
+   string; every test that builds a test DB via `testkit.rs`
+   failed. **Fix:** keep one declaration, add the trailing comma
+   so `last_event_seq INTEGER` follows correctly. Solved 320 of
+   the 322 test failures in one edit.
+
+2. **`models/workspaces.rs:851-855`** — duplicate
    `active_run_action_id` field assignment + SQL column
    re-numbering. Fork added `runtime_name` at position 40 in its
    own SQL; upstream's Smart Triage added `kind` +
-   `ai_priming_consumed` at positions 41-42. The integrated SQL
-   needs all four columns with correct positions, and every
-   `row.get(N)?` in the Rust struct mapping needs re-mapping.
+   `ai_priming_consumed` at positions 41-42. **Fix:** integrated
+   SQL select gets `..., active_run_action_id (40), kind (41),
+   ai_priming_consumed (42), runtime_name (43)`; Rust struct
+   mapping updated to match.
 
-2. **`sidecar.rs:655`** — `SidecarEvent { raw }` missing fork's
-   added `seq` field. Every literal in the restored upstream code
-   needs `seq: ..` added. Multiple call sites.
+3. **`sidecar.rs:655`** — `SidecarEvent { raw }` (upstream's
+   shape) followed by `SidecarEvent { raw, seq: None }` (fork's
+   shape) — union-merge duplicate. **Fix:** drop upstream's line;
+   keep fork's `seq: None` literal. All other call sites in
+   upstream-restored code already passed `seq: None` where the
+   pattern came up.
 
-3. **`triage/workspace_factory.rs:68`** — fork bumped
-   `prepare_workspace_from_repo_impl` from 5 → 6 args (added
-   `seed_session_id: Option<&str>`). Every restored upstream call
-   site needs the new param. Likely several sites across triage
-   code.
+4. **`triage/workspace_factory.rs:68`** —
+   `prepare_workspace_from_repo_impl` arity bump from 5 → 6 args
+   (fork added `seed_session_id: Option<&str>`). **Fix:** add
+   `None` as the 6th arg in the triage caller.
 
-4. **`agents/streaming/mod.rs:1037`** — type inference broken in
-   the user-input-request handler block from chimeric union-merge.
-   Likely needs reading both sides' versions of the handler and
-   manually picking the correct unified shape.
+5. **`agents/streaming/mod.rs`** — multiple chimeric artifacts:
+   missing closing braces around the `plan_review_thread_message_like`
+   struct literal, a duplicate `build_exit_plan_review_message`
+   function (the fork moved this to a `plan_review` submodule),
+   unbound `let send_result` from a misordered union, and a
+   duplicate `sidecar:` parameter in `send_agent_message_stream`.
+   **Fix:** added closing braces, deleted the duplicate function,
+   reordered to bind `send_result` correctly, dropped the
+   duplicate param.
 
-5. (likely more — `cargo check` stops at the first ~10 errors;
-   another round of fixes surfaces more.)
+6. **Module restructure conflict:** fork moved
+   `src-tauri/src/agents/streaming/state.rs` (flat) →
+   `agents/streaming/state/` (mod.rs / handlers.rs / tests.rs).
+   Restoring upstream's deletions brought back the flat file too,
+   creating a `state.rs` AND `state/` at the same module level.
+   **Fix:** deleted the flat `state.rs`; the fork's restructured
+   layout is the integrated shape.
 
-These resolutions can't be "take both sides" mechanically — they
-need understanding of which contract evolved and how. Realistic
-effort: 2-4 hours of focused work plus another 30-60 min of full
-test verification after compile-clean.
+7. **`src/features/settings/index.tsx`** — duplicate `import`
+   statements for `ClaudeCustomProvidersPanel` and
+   `RepositorySettingsPanel` from union-merge.
+   **Fix:** consolidated imports into a single block, alphabetised.
 
-### WIP state preserved
+After these fixes:
 
-- **Branch:** `upstream-pr/remote-runtime` (local only,
-  NOT pushed anywhere — pushing implies ready-state).
-- **Commit:** `b692295b` (WIP marker in the commit message).
-- **Diff:** 235 files changed, +67 880 / -2 818 (against
-  `origin/main`).
-- **Status:** ~5+ compile errors, untested.
-- **Bypass note:** the WIP commit used `--no-verify` because
-  `lint-staged`'s `cargo fmt` integration reports phantom missing
-  files (`src-tauri/src/keychain.rs` + integration test files —
-  they all exist + are staged). The next CLEAN commit on this
-  branch must NOT use `--no-verify`.
+| Gate | Result |
+|---|---|
+| `cargo check --all-targets` | ✅ 0 errors |
+| `cargo clippy --all-targets -- -D warnings` | ✅ 0 warnings (37s) |
+| `bun x biome check src/` | ✅ clean (604 files) |
+| `cargo test --lib` | ✅ 2003 passed; 2 known kill_* flakes (pass serially with `--test-threads=1`) |
+| `cargo test --test remote_binary_integration` | ✅ 15/15 |
+| `cargo test --tests` (lib + integration) | ✅ 2003 + 15 |
+| `bun x vitest run` | ✅ 1603/1603 across 148 files |
+| `bun test` (sidecar) | ✅ 268/268 |
 
-### Revised recommendation
+### Final state
 
-**Path B is still right** — open the discussion issue first. The
-rebase difficulty isn't a reason to bypass it; if anything it's a
-reason TO open the issue first, because:
+- **Branch:** `fork/upstream-pr/remote-runtime`
+  (https://github.com/david-engelmann/helmor/tree/upstream-pr/remote-runtime).
+- **Commit:** `67c539bf` (`feat(remote): route workspaces through a pluggable runtime so they can live on a remote machine`).
+- **Diff:** 236 files / +67 877 / -2 821 against `origin/main`.
+- **Pushed to:** fork only. **NOT** pushed to `origin =
+  dohooo/helmor`. **NO** issue / discussion / PR opened upstream.
+  Per the standing memory rule
+  (`feedback_helmor_pr_target.md`), upstream interaction requires
+  explicit operator approval.
 
-1. The conflicts revealed Smart Triage's tight overlap with our
-   work. A maintainer who understands both sides can suggest a
-   resolution that avoids interleaving (e.g. "yes, ship as a
-   refactor that includes restructuring `state.rs` into `state/`
-   — we'd be open to it" or "no, keep state.rs flat — please
-   restructure your additions to fit").
+## Pre-PR checklist — completed
 
-2. Maintainer feedback on **scope** beats hours of mechanical
-   resolution. If they say "stay in your fork", the 90 min of
-   rebase work was the cap, not 4 more hours of careful semantic
-   resolution.
+All steps from the original pre-PR checklist were completed in this
+session. The branch `fork/upstream-pr/remote-runtime` is the
+artifact. Re-listing here for record:
 
-3. The U7 artifacts (PR body, issue body, changeset, announcement)
-   all hold against the rebased shape — they don't depend on the
-   exact LOC count or file path of every detail.
+- [x] **Built the rebased branch:** `git switch -c
+      upstream-pr/remote-runtime origin/main` + `git merge --squash
+      main`.
+- [x] **Resolved 9 content conflicts** via union-merge + 7
+      manual semantic fixes (detailed above).
+- [x] **Applied path exclusions** per
+      `docs/upstream-docs-disposition.md`.
+- [x] **Applied the soak-results transform.**
+- [x] **Added consolidated `.changeset/remote-runtime.md`.**
+- [x] **Added consolidated `.announcements/remote-workspaces.json`.**
+- [x] **Restored the 41 fork-only deletions** from `origin/main`.
+- [x] **`cargo check --all-targets`** → 0 errors.
+- [x] **`cargo clippy --all-targets -- -D warnings`** → 0 warnings.
+- [x] **`bun x biome check src/`** → clean.
+- [x] **`bun x vitest run`** → 1603/1603.
+- [x] **`cd src-tauri && cargo test --tests`** → 2003 + 15
+      integration (2 known kill_* flakes pass serially).
+- [x] **`cd sidecar && bun test`** → 268/268.
+- [x] **Squashed to ONE commit** as `67c539bf` with the
+      conventional-commits title.
+- [x] **Pushed to fork**: `david-engelmann/helmor:upstream-pr/remote-runtime`.
 
-The pre-PR checklist below now includes the rebase resumption
-steps from the WIP branch.
+What did NOT happen, deliberately:
 
-## Pre-PR checklist (refined for rebase resumption)
+- [ ] ❌ Push to `origin = dohooo/helmor`.
+- [ ] ❌ Open an issue / discussion / PR on upstream.
+- [ ] ❌ Comment on any upstream thread.
 
-When Path B's issue gets a green light:
-
-- [ ] **Resume the WIP rebase:** `git switch
-      upstream-pr/remote-runtime`, then iterate on the remaining
-      compile errors per the "Beyond mechanical" section above.
-- [ ] **Re-check `origin/main` for new commits.** If `dohooo/main`
-      shipped further PRs between U8 and resumption, fold those
-      in (rebase-on-top, not merge-on-top).
-- [ ] **`cargo check --all-targets` → 0 errors.**
-- [ ] **`cargo clippy --all-targets -- -D warnings`** — 0 warnings.
-- [ ] **`bun x biome check src/`** — clean.
-- [ ] **`bun run test`** — green.
-- [ ] **`cd src-tauri && cargo test --tests`** — green.
-- [ ] **Spot-check the consolidated SQL** in
-      `models/workspaces.rs` — load + insert + update agree on
-      column count + order.
-- [ ] **Re-verify the PR body's file paths + LOC counts** against
-      the actually-rebased diff. Update tables if anything moved.
-- [ ] **Squash to ONE commit** with the conventional-commits
-      title: `feat(remote): route workspaces through a pluggable
-      runtime so they can live on a remote machine`.
-- [ ] **Force-push the branch to the fork**:
-      `git push fork upstream-pr/remote-runtime --force`. (Force
-      is fine because the branch was never published before.)
-- [ ] **Open the PR** against `dohooo/helmor:main` from
-      `david-engelmann/helmor:upstream-pr/remote-runtime` with the
-      body from `docs/upstream-pr-body.md`.
+Per the standing memory rule, any of those requires explicit
+operator approval.
 
 ## Exit criterion for U8
 
