@@ -479,7 +479,7 @@ function AppShell({
 	const handleStartRuntimeSelect = startSurfaceActions.selectRuntime;
 	const startBranchIntent = startSurface.startBranchIntent;
 	const handleStartBranchIntentChange = startSurfaceActions.selectBranchIntent;
-	// Phase 22c: fetch registered runtimes so the Where picker in the
+	// Fetch registered runtimes so the Where picker in the
 	// Start page can list the non-local ones. The picker only appears
 	// when at least one remote is registered; the runtime-debug panel
 	// is where the operator adds them. Stale-while-revalidate suits
@@ -770,7 +770,7 @@ function AppShell({
 			? null
 			: (selectedWorkspaceDetail?.rootPath ?? null);
 
-	// Phase 24g: drive a file watcher for the currently-open workspace
+	// Drive a file watcher for the currently-open workspace
 	// so the inspector's React Query keys (changes / fileTree / git
 	// status) invalidate on every debounced batch of file changes.
 	// `runtimeName` picks the local FileWatcher (None / "local") vs
@@ -782,7 +782,7 @@ function AppShell({
 		runtimeName: selectedWorkspaceDetail?.runtimeName ?? null,
 	});
 
-	// Phase 24h: workspace-wide search panel (Cmd+Shift+S). State
+	// Workspace-wide search panel (Cmd+Shift+S). State
 	// lives here so the global shortcut handler can open it; the
 	// panel component itself owns Esc / backdrop / button close.
 	const workspaceSearchPanel = useWorkspaceSearchPanel();

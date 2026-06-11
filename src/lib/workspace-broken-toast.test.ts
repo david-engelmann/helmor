@@ -1,4 +1,4 @@
-// Phase 22d test: the destructive "Workspace directory is missing"
+// The destructive "Workspace directory is missing"
 // toast names the bound remote so the operator can tell which host's
 // workspace they're about to permanently delete. Local-bound and
 // host-agnostic calls fall back to the legacy copy.
@@ -13,7 +13,7 @@ function setupToastSpy() {
 	return { pushToast, queryClient };
 }
 
-describe("showWorkspaceBrokenToast (phase 22d host naming)", () => {
+describe("showWorkspaceBrokenToast (host naming)", () => {
 	it("falls back to host-agnostic copy when runtimeName is missing", () => {
 		const { pushToast, queryClient } = setupToastSpy();
 		showWorkspaceBrokenToast({

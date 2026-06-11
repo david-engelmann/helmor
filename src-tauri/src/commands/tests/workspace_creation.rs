@@ -1910,7 +1910,7 @@ fn prepare_workspace_from_repo_with_backlog_initial_status_lands_in_backlog() {
     assert_eq!(status, "backlog");
 }
 
-// ── runtime_name on create (phase 22c) ───────────────────────────
+// ── runtime_name on create ───────────────────────────────────────
 
 #[test]
 fn prepare_local_workspace_persists_runtime_name_when_supplied() {

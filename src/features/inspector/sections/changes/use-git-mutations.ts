@@ -45,7 +45,7 @@ export function useGitMutations({
 	workspaceId: string | null;
 	workspaceRootPath: string | null;
 	/**
-	 * Phase 22d: workspace's bound runtime, surfaced in the
+	 * Workspace's bound runtime, surfaced in the
 	 * "permanently delete" toast so the operator can tell at a glance
 	 * which host's workspace they're nuking. `null` (default) collapses
 	 * to the legacy host-agnostic copy.

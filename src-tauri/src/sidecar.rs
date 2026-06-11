@@ -39,10 +39,10 @@ pub struct SidecarRequest {
 #[derive(Debug, Clone)]
 pub struct SidecarEvent {
     pub raw: Value,
-    /// Phase 24q-2: monotonic sequence number assigned by the
+    /// Monotonic sequence number assigned by the
     /// remote daemon's event journal. `None` for the local sidecar
     /// path (no journal there — the desktop is the only consumer)
-    /// or when a remote runtime predates 24q-1's wire shape.
+    /// or when a remote runtime predates the journal wire shape.
     /// Threaded through to `session_messages.last_event_seq` so a
     /// reconnect can ask the daemon for events newer than the
     /// desktop's persisted high-water mark.

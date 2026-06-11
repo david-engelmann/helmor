@@ -109,8 +109,7 @@ pub enum Method {
     /// resolveUserInput / generateTitle / …) to the daemon's
     /// managed sidecar process. Events flow back as
     /// `agent.event` notifications keyed by the same
-    /// `request_id` the client picked. Phase 23a: surface-only;
-    /// the server-side bridge lands in 23b.
+    /// `request_id` the client picked.
     AgentSend,
     /// Abort an active agent stream by `request_id`. Translates
     /// to the sidecar's own `abort` RPC on the daemon side.
@@ -1385,11 +1384,11 @@ pub const WORKSPACE_FILE_EVENT_METHOD: &str = "workspace.fileEvent";
 // `agent.event` notifications carrying the raw `SidecarEvent` JSON
 // keyed by the same `request_id` the client chose.
 //
-// Phase 23a is surface-only: the trait grows default-bailing methods,
-// `RemoteSshRuntime` delegates via `client.call`, and the dispatcher
-// returns `HANDLER_FAILED` until 23b wires `RemoteAgentState` on the
-// daemon side. The wire shapes are locked in here so 23b can flip
-// the implementation without re-touching the catalogue.
+// The trait grows default-bailing methods, `RemoteSshRuntime`
+// delegates via `client.call`, and the dispatcher historically
+// returned `HANDLER_FAILED` until `RemoteAgentState` landed on the
+// daemon side. The wire shapes are locked in here so future
+// implementations can flip without re-touching the catalogue.
 
 /// Method name for server→client agent events. Not an `RpcMethod`
 /// (no Params/Result pair — it's a notification, not a call) but
@@ -1455,9 +1454,9 @@ impl RpcMethod for AgentAbortMethod {
 pub struct AgentListParams {}
 
 /// Lifecycle state of an agent session as surfaced by `agent.list`.
-/// Phase 24t introduces the `EndedReplayOnly` variant so a desktop
-/// can distinguish "live, still streaming" sessions from sessions
-/// whose sidecar process has ended (the journal lives on disk only).
+/// The `EndedReplayOnly` variant lets a desktop distinguish "live,
+/// still streaming" sessions from sessions whose sidecar process
+/// has ended (the journal lives on disk only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentSessionState {
@@ -1503,9 +1502,9 @@ pub struct AgentSessionEntry {
     /// forwarded for this session. Lets a reconnecting client tell a
     /// dormant session from one mid-stream.
     pub last_event_ms: i64,
-    /// Phase 24t: lifecycle phase of this session. Defaults to
-    /// `Live` so older daemons (no 24t durability) don't need to
-    /// produce the field. Pre-24t clients see the same JSON either
+    /// Lifecycle phase of this session. Defaults to
+    /// `Live` so older daemons (without durability) don't need to
+    /// produce the field. Older clients see the same JSON either
     /// way.
     #[serde(default)]
     pub state: AgentSessionState,
@@ -1527,7 +1526,7 @@ impl RpcMethod for AgentListMethod {
 #[serde(rename_all = "camelCase")]
 pub struct AgentAttachParams {
     pub request_id: String,
-    /// Phase 24q-1: the highest event `seq` the calling client has
+    /// The highest event `seq` the calling client has
     /// already observed for this session. The daemon flushes
     /// journal entries with `seq > since_seq` through the new
     /// notifier before going live, so a reconnecting client catches
@@ -1549,20 +1548,20 @@ pub struct AgentAttachResult {
     /// never existed on this daemon — the client should drop its
     /// local subscription rather than wait indefinitely.
     pub found: bool,
-    /// Phase 24q-1: highest seq the daemon's journal has observed
+    /// Highest seq the daemon's journal has observed
     /// for this session. The client stores this as its new
     /// `since_seq` for any future reattach. `0` when the journal
     /// is empty (a session that was just created and hasn't emitted
     /// anything yet, or when `found=false`).
     #[serde(default)]
     pub last_seq: u64,
-    /// Phase 24q-1: number of journal entries the daemon flushed to
+    /// Number of journal entries the daemon flushed to
     /// the new notifier as part of this attach. `0` on a cold
     /// attach to an empty session, on a re-attach with `since_seq
     /// == last_seq`, or on `found=false`.
     #[serde(default)]
     pub replayed_count: u64,
-    /// Phase 24q-1: when the caller's `since_seq` is older than the
+    /// When the caller's `since_seq` is older than the
     /// oldest entry still in the ring (eviction), the daemon cannot
     /// satisfy the full replay. This field carries the earliest
     /// seq the journal can still deliver. The client treats this
@@ -1670,10 +1669,10 @@ pub struct AgentEventNotification {
     /// `SidecarEvent { raw: ... }` from this value and feeds it into
     /// the local pipeline unchanged.
     pub event: serde_json::Value,
-    /// Phase 24q-1: monotonic seq assigned by the daemon's event
-    /// journal. `None` when the daemon predates 24q-1 (defensive —
-    /// shouldn't happen on a matched-version pair, but lets us
-    /// drop in a newer desktop against an older daemon without
+    /// Monotonic seq assigned by the daemon's event
+    /// journal. `None` when the daemon predates the journal
+    /// (defensive — shouldn't happen on a matched-version pair, but
+    /// lets us drop in a newer desktop against an older daemon without
     /// the deserializer choking). Threaded onto `SidecarEvent.seq`
     /// so the reattach loop can persist it as
     /// `session_messages.last_event_seq`.
@@ -2347,7 +2346,7 @@ mod tests {
         assert!(wire.get("helmorSessionId").is_none(), "wire: {wire}");
         assert!(wire.get("provider").is_none(), "wire: {wire}");
         assert!(wire.get("workspaceDir").is_none(), "wire: {wire}");
-        // Phase 24t: state defaults to Live + always serializes
+        // State defaults to Live + always serializes
         // (no skip_serializing_if), so older clients see the field.
         assert_eq!(wire["state"], "live");
     }

@@ -104,7 +104,7 @@ export function FileMentionPlugin({
 	 * Workspace id passed through to the binding-aware IPC resolver so a
 	 * workspace pinned to a remote runtime walks files on the remote
 	 * instead of the desktop's filesystem. `undefined` falls back to the
-	 * local runtime — same behaviour as before phase 20d.
+	 * local runtime — the historical behaviour.
 	 */
 	workspaceId?: string | null;
 	/**

@@ -43,7 +43,7 @@ pub async fn get_app_settings() -> CmdResult<std::collections::HashMap<String, S
 
 #[tauri::command]
 pub async fn update_app_settings(
-    // `ManagedSidecar` is managed behind an `Arc` (lib.rs Phase 23c), so the
+    // `ManagedSidecar` is managed behind an `Arc` (see `lib.rs`), so the
     // resolved state type must match exactly or Tauri fails at runtime with
     // "state not managed for field `sidecar`". The upstream version of this
     // command took the bare type; reconciled here during the origin/main merge.

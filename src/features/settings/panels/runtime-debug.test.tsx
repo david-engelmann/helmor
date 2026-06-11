@@ -117,7 +117,7 @@ function renderPanel() {
 }
 
 /**
- * The status probe and the inspector probe (phase 20e) share label
+ * The status probe and the inspector probe share label
  * text by design — the two sections want to read identically. Tests
  * scope by id (set on each input) to keep the two surfaces
  * independently targetable.
@@ -292,7 +292,7 @@ describe("RuntimeDebugPanel", () => {
 	});
 
 	it("pasting an ssh:// URL pre-fills the Host field and surfaces a hint", async () => {
-		// Phase 21e: the paste-URL helper short-circuits the
+		// The paste-URL helper short-circuits the
 		// type-out-the-host flow. Verifies the parser actually wires
 		// to the Host input + emits the user-visible hint.
 		const user = userEvent.setup();
@@ -361,7 +361,7 @@ describe("RuntimeDebugPanel", () => {
 	});
 
 	it("renders a transport-kind chip next to each non-local runtime", async () => {
-		// Phase 21e: the transport chip exposes the flavor (`ssh` /
+		// The transport chip exposes the flavor (`ssh` /
 		// `cmd`) so an operator can tell two degraded entries apart at
 		// a glance without opening the tooltip. We assert by looking
 		// for the lowercase chip text in the rendered DOM — each chip
@@ -737,7 +737,7 @@ describe("RuntimeDebugPanel", () => {
 		});
 	});
 
-	// ── workspace inspector probe (phase 20e) ────────────────────────
+	// ── workspace inspector probe ────────────────────────────────────
 
 	it("runs the file-tree probe and renders the first few entries", async () => {
 		const user = userEvent.setup();
@@ -1252,7 +1252,7 @@ describe("RuntimeDebugPanel", () => {
 		await screen.findByRole("button", { name: /Open terminal/ });
 	});
 
-	// ── Reattach UI (phase 19c) ────────────────────────────────
+	// ── Reattach UI ────────────────────────────────────────────
 
 	it("lists live remote terminals when a runtime is selected", async () => {
 		const user = userEvent.setup();
@@ -1418,7 +1418,7 @@ describe("RuntimeDebugPanel", () => {
 		).toBeInTheDocument();
 	});
 
-	// ── Set agent auth section (phase 23e) ────────────────────────
+	// ── Set agent auth section ────────────────────────────────────
 
 	it("shows the empty hint when no remote runtimes are registered", async () => {
 		// Only the built-in local entry exists → the auth section
@@ -1528,7 +1528,7 @@ describe("RuntimeDebugPanel", () => {
 		});
 	});
 
-	// ── Remote agent sessions section (phase 24d) ──────────────────
+	// ── Remote agent sessions section ──────────────────────────────
 
 	it("agent sessions section: shows hint when no remote runtimes are registered", async () => {
 		// Only the built-in `local` entry — the section should refuse
@@ -1589,7 +1589,7 @@ describe("RuntimeDebugPanel", () => {
 	});
 
 	it("agent sessions section: ended-replay-only sessions render an 'ended' badge", async () => {
-		// Phase 24t: agent.list now surfaces sessions whose sidecar
+		// agent.list now surfaces sessions whose sidecar
 		// process is gone but whose on-disk journal survives. The row
 		// gets a small "ended" badge so an operator can tell them
 		// apart from live sessions.
@@ -1671,7 +1671,7 @@ describe("RuntimeDebugPanel", () => {
 	});
 
 	it("agent sessions section: Reattach starts a streaming subscription and surfaces the event log", async () => {
-		// Phase 24i: clicking Reattach now opens a live event
+		// Clicking Reattach now opens a live event
 		// stream via reattachRemoteAgentSessionStream. The panel
 		// surfaces a "streaming events for ..." notice + renders
 		// the event log placeholder.
@@ -1819,12 +1819,12 @@ describe("RuntimeDebugPanel", () => {
 		});
 	});
 
-	// ── Chat preview (phase 24l) ──────────────────────────────
+	// ── Chat preview ──────────────────────────────────────────
 
 	it("agent sessions section: Chat preview button is disabled until the row reports a helmor session id", async () => {
-		// 24l's invariant: the cooked stream needs a helmor
-		// session id to know where to route messages. Sessions
-		// without one (anonymous test flows) still appear in the
+		// Invariant: the cooked stream needs a helmor session id to
+		// know where to route messages. Sessions without one
+		// (anonymous test flows) still appear in the
 		// list, but the chat-preview affordance must stay
 		// disabled so the operator gets a tooltip instead of an
 		// RPC error.
@@ -2077,7 +2077,7 @@ describe("RuntimeDebugPanel", () => {
 		).toBeInTheDocument();
 	});
 
-	// ── Connection diagnostics section (phase 24j) ────────────────
+	// ── Connection diagnostics section ────────────────────────────
 
 	it("connection diagnostics: renders local runtime card with state chip + ping", async () => {
 		// Default empty-runtimes setup → the section's dropdown
@@ -2225,7 +2225,7 @@ describe("RuntimeDebugPanel", () => {
 		).toBeInTheDocument();
 	});
 
-	// ── Port forwards section (phase 24k) ───────────────────────────
+	// ── Port forwards section ───────────────────────────────────────
 
 	it("port forwards: shows hint when no remote runtimes are registered", async () => {
 		renderPanel();

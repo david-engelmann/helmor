@@ -1276,14 +1276,14 @@ function ProbeResult({
 	);
 }
 
-// ── 3b. Workspace inspector probe (phase 20e) ────────────────────────
+// ── 3b. Workspace inspector probe ────────────────────────────────────
 //
 // Mirrors the `WorkspaceStatusProbeSection` shape but exercises the
-// phase 20a-d slice end-to-end: file tree + changes (with and without
-// content) routed through `resolve_runtime_for_call`. Lets the
-// operator verify the full vertical visually before / after pinning a
-// workspace to a remote runtime — the runtime label in the result
-// confirms which side actually answered.
+// workspace-inspector slice end-to-end: file tree + changes (with
+// and without content) routed through `resolve_runtime_for_call`.
+// Lets the operator verify the full vertical visually before / after
+// pinning a workspace to a remote runtime — the runtime label in
+// the result confirms which side actually answered.
 
 function WorkspaceInspectorProbeSection({
 	entries,
@@ -1871,7 +1871,7 @@ function ReattachList({
 	);
 }
 
-// ── Remote agent sessions (phase 24d — reattach UX) ───────────────
+// ── Remote agent sessions (reattach UX) ───────────────────────────
 
 function RemoteAgentSessionsSection({ entries }: { entries: RuntimeEntry[] }) {
 	const remotes = useMemo(() => entries.filter((e) => !e.isLocal), [entries]);
@@ -1919,23 +1919,23 @@ function RemoteAgentSessionsSection({ entries }: { entries: RuntimeEntry[] }) {
 		onError: (err) => setNotice({ tone: "error", text: errorMessage(err) }),
 	});
 
-	// Phase 24i: replace the one-shot attach probe with a real
-	// streaming reattach. `useReattachAgentStream` drives the
-	// subscription lifecycle (attach + subscribe + auto-release
-	// on unmount) and surfaces events through `stream.events`.
+	// A streaming reattach (replaces the earlier one-shot attach
+	// probe). `useReattachAgentStream` drives the subscription
+	// lifecycle (attach + subscribe + auto-release on unmount) and
+	// surfaces events through `stream.events`.
 	const stream = useReattachAgentStream();
-	// Phase 24l: a parallel chat-cooked stream that runs the
-	// daemon's events through the desktop's MessagePipeline +
-	// emits the same AgentStreamEvent envelope the chat's
-	// useStreaming hook consumes. The panel renders the
-	// trailing Update messages as a chat-style preview so the
-	// operator sees actual assistant text, not raw JSON.
+	// A parallel chat-cooked stream that runs the daemon's events
+	// through the desktop's MessagePipeline + emits the same
+	// AgentStreamEvent envelope the chat's useStreaming hook
+	// consumes. The panel renders the trailing Update messages as a
+	// chat-style preview so the operator sees actual assistant
+	// text, not raw JSON.
 	const chatStream = useChatReattachStream();
 
 	const handleReattachClick = async (session: RemoteAgentSession) => {
 		// Mirror the prior `attachMutation` UX: a notice on the
 		// notFound path so the user understands the panel state.
-		// Phase 24q-2: pass the session's `helmorSessionId` (when
+		// Pass the session's `helmorSessionId` (when
 		// present) so the backend computes `since_seq` from the
 		// desktop's local DB high-water-mark, letting the daemon's
 		// journal replay close the gap.
@@ -2381,9 +2381,9 @@ function RemoteAgentSessionRow({
 	streaming: boolean;
 	/**
 	 * `true` when this row's session is being rendered as a
-	 * chat-style preview (phase 24l). Re-labels the chat-preview
-	 * button to "Stop" so the user can drop the preview without
-	 * waiting for the daemon's terminal event.
+	 * chat-style preview. Re-labels the chat-preview button to
+	 * "Stop" so the user can drop the preview without waiting for
+	 * the daemon's terminal event.
 	 */
 	chatPreviewActive: boolean;
 	onAbort: () => void;
@@ -3381,7 +3381,7 @@ function RemoteTerminalSection({ entries }: { entries: RuntimeEntry[] }) {
 	);
 }
 
-/// Phase 23e: dev-panel surface for `agent.setAuth`. Lets the
+/// Dev-panel surface for `agent.setAuth`. Lets the
 /// operator push an SDK API key to a remote runtime's secrets
 /// store without dropping into the developer console. Keys never
 /// touch the desktop's settings DB — the wrapper just forwards.

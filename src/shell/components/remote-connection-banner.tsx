@@ -9,7 +9,7 @@ import {
 	subscribeUiMutations,
 } from "@/lib/api";
 
-/// Reconnect banner for disconnected remote runtimes (phase 25a).
+/// Reconnect banner for disconnected remote runtimes.
 ///
 /// The backend's auto-reconnect loop already retries
 /// `connect_from_config` with exponential backoff for any

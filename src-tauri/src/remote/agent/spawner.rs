@@ -43,12 +43,12 @@ impl std::fmt::Debug for SidecarPipe {
 }
 
 /// Resolves the sidecar binary via the `HELMOR_SIDECAR_PATH` env var
-/// only. Bundling on the remote side is in phase 23e; until then the
-/// operator places `helmor-sidecar` somewhere on disk and points the
-/// env var at it. Returns a wrapped error explaining the env-var
-/// requirement when the path isn't set or doesn't exist — that's the
-/// most common operator misconfiguration and the message needs to be
-/// legible from a connection-failure toast.
+/// only. Until remote-side bundling lands, the operator places
+/// `helmor-sidecar` somewhere on disk and points the env var at it.
+/// Returns a wrapped error explaining the env-var requirement when
+/// the path isn't set or doesn't exist — that's the most common
+/// operator misconfiguration and the message needs to be legible
+/// from a connection-failure toast.
 pub struct BinaryAgentSpawner {
     binary_path: PathBuf,
 }

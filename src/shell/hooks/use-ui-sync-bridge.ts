@@ -123,7 +123,7 @@ function handleUiMutation(
 			void queryClient.invalidateQueries({
 				queryKey: helmorQueryKeys.repositories,
 			});
-			// Backfill phase 2 also emits this when it clears /
+			// The forge-login backfill also emits this when it clears /
 			// re-binds a stale `forge_login`. The chip header,
 			// inspector forge section, and inspector PR/MR action
 			// status all read off whichever login the workspace's
@@ -209,7 +209,7 @@ function handleUiMutation(
 			});
 			return;
 		case "remoteReconnectAttempt":
-			// Phase 25a: the auto-reconnect loop announces each retry
+			// The auto-reconnect loop announces each retry
 			// + its outcome. The banner reads the running attempts
 			// count straight from the event payload (cheap), and a
 			// successful attempt also triggers a runtime list refresh

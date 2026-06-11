@@ -77,7 +77,7 @@ describe("useReattachAgentStream", () => {
 	});
 
 	it("forwards helmorSessionId + surfaces daemon replay diagnostics", async () => {
-		// Phase 24q-2: the hook hands `helmorSessionId` through to
+		// The hook hands `helmorSessionId` through to
 		// the API call (the backend computes `since_seq` from it)
 		// and stashes the daemon-reported lastSeq / replayedCount /
 		// replayGap on its state so the panel can render them.

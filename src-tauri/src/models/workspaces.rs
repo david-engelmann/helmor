@@ -689,9 +689,9 @@ pub(crate) fn update_restored_workspace_state(
 /// workspace id doesn't match any row — the resolver treats both
 /// cases identically.
 ///
-/// Phase 22b's resolver consults this *before* the JSON sidecar
-/// binding store, so a row that's been migrated (or written via 22b+
-/// write paths) wins over a stale sidecar entry.
+/// The resolver consults this *before* the JSON sidecar
+/// binding store, so a row that's been migrated (or written via
+/// the column-based write paths) wins over a stale sidecar entry.
 pub fn load_workspace_runtime_name(workspace_id: &str) -> Result<Option<String>> {
     let connection = db::read_conn()?;
     load_workspace_runtime_name_from(&connection, workspace_id)
@@ -742,16 +742,16 @@ pub fn update_workspace_runtime_name_in(
     Ok(rows)
 }
 
-/// Phase 22a one-time copy from the JSON binding sidecar
+/// One-time copy from the JSON binding sidecar
 /// (`<data_dir>/workspace_runtime_bindings.json`) into the new
 /// `workspaces.runtime_name` column. Idempotent: only fills rows
 /// that currently have `runtime_name IS NULL`, so re-running on an
 /// already-migrated DB is a no-op.
 ///
-/// The binding sidecar itself stays on disk — it's still the source
-/// of truth for the pre-22b resolver code path. Phase 22b flips the
-/// resolver to consult the column first; until then the column is
-/// dead data + only this backfill writes to it.
+/// The binding sidecar itself stays on disk — it remains the
+/// source of truth for the legacy resolver code path. The column-
+/// first resolver supersedes it; until that landed, the column was
+/// dead data + only this backfill wrote to it.
 ///
 /// Returns the number of rows that got a value written, so the
 /// startup hook can log a single info-level line summarising the
@@ -981,7 +981,7 @@ mod tests {
         assert_eq!(backfill_runtime_name_into(&mut conn, &bindings).unwrap(), 0,);
     }
 
-    // ── load_workspace_runtime_name (phase 22b) ───────────────────
+    // ── load_workspace_runtime_name ───────────────────────────────
 
     #[test]
     fn load_runtime_name_returns_some_for_a_set_row() {
@@ -1008,7 +1008,7 @@ mod tests {
             .is_none());
     }
 
-    // ── update_workspace_runtime_name (phase 22b) ─────────────────
+    // ── update_workspace_runtime_name ─────────────────────────────
 
     #[test]
     fn update_runtime_name_sets_and_clears_value() {

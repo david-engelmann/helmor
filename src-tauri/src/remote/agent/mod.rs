@@ -1,4 +1,4 @@
-//! Server-side agent bridge (phase 23b).
+//! Server-side agent bridge.
 //!
 //! `RemoteAgentState` owns the daemon's connection to a `helmor-sidecar`
 //! subprocess. Each `agent.send` RPC translates to a `SidecarRequest`
@@ -23,13 +23,13 @@
 //!   keyed by `request_id` before writing to stdin so the reader
 //!   thread can route every inbound event back to the right
 //!   notifier. The desktop's local pipeline has been doing this
-//!   since phase 14; we're applying the same pattern remote-side.
+//!   for a while; we're applying the same pattern remote-side.
 //! - **Per-session notifier swap.** `agent.attach` replaces the
 //!   notifier on an existing session — same primitive as
-//!   [`super::terminal`]'s `replace_notifier`. Phase 23b implements
-//!   the wire shape; phase 23d makes the daemon actually outlive
-//!   the client (today the sidecar stays alive as long as the
-//!   daemon does, which is enough for the routing flip in 23c).
+//!   [`super::terminal`]'s `replace_notifier`. The wire shape lands
+//!   first; later work makes the daemon actually outlive the
+//!   client (today the sidecar stays alive as long as the daemon
+//!   does, which is enough for the routing flip).
 //! - **Spawner is a trait.** Production wires
 //!   [`BinaryAgentSpawner`] against `HELMOR_SIDECAR_PATH`; tests
 //!   inject `mock::MockAgentSpawner` with a hand-scripted event
@@ -82,7 +82,7 @@ pub struct RemoteAgentState {
     spawner: Arc<dyn AgentSpawner>,
     sidecar: Mutex<Option<RunningSidecar>>,
     sessions: Arc<Mutex<HashMap<String, ActiveAgentSession>>>,
-    /// Phase 24t: sessions whose journals exist on disk but whose
+    /// Sessions whose journals exist on disk but whose
     /// sidecar process is gone (either because the original session
     /// ended cleanly OR because the daemon restarted mid-session).
     /// `agent.list` merges these in as `state: "endedReplayOnly"` and
@@ -94,12 +94,12 @@ pub struct RemoteAgentState {
     /// the former is a static configuration error and the toast
     /// shouldn't suggest "try reconnecting".
     spawn_disabled_reason: Option<String>,
-    /// Where to persist API keys pushed via `agent.setAuth`. Phase
-    /// 23d default: `$HOME/.helmor/server/secrets.json` (mode 0600).
+    /// Where to persist API keys pushed via `agent.setAuth`.
+    /// Default: `$HOME/.helmor/server/secrets.json` (mode 0600).
     /// `None` disables persistence — tests use this to drive the
     /// in-memory flow without touching the filesystem.
     secrets_path: Option<PathBuf>,
-    /// Phase 24t: directory holding per-session journal files. When
+    /// Directory holding per-session journal files. When
     /// `None`, disk persistence is disabled (tests that don't care
     /// about durability). Production wires this to
     /// `$HOME/.helmor/server/journals/`.
@@ -127,7 +127,7 @@ impl RemoteAgentState {
         self
     }
 
-    /// Phase 24t: wire the journal directory. Calling this enables
+    /// Wire the journal directory. Calling this enables
     /// per-session disk-backed journals, scans the directory for
     /// any existing JSONL files (surfacing them as
     /// `endedReplayOnly` sessions), and sweeps files older than
@@ -251,7 +251,7 @@ impl RemoteAgentState {
             .and_then(Value::as_str)
             .map(str::to_string);
         let now = now_ms();
-        // Phase 24t: wire a disk writer for this session's journal
+        // Wire a disk writer for this session's journal
         // when the daemon is configured with a journal dir. Failure
         // to open the file logs + falls back to in-memory-only mode
         // — losing durability is better than rejecting the send.
@@ -282,7 +282,7 @@ impl RemoteAgentState {
             last_event_ms: Mutex::new(now),
             journal: Mutex::new(journal),
         };
-        // Phase 24t: re-sending a request_id that exists in the ended
+        // Re-sending a request_id that exists in the ended
         // map (e.g. daemon restarted, desktop is re-sending the same
         // logical session) takes over — drop the ended entry so
         // agent.list doesn't double-count.
@@ -391,7 +391,7 @@ impl RemoteAgentState {
                 })
                 .collect()
         };
-        // Phase 24t: merge in ended-replay-only sessions. The map's
+        // Merge in ended-replay-only sessions. The map's
         // entries get stable order from the same `started_at_ms`
         // sort below; tagging them `EndedReplayOnly` is what tells
         // the desktop's auto-attach hook to skip them.
@@ -422,7 +422,7 @@ impl RemoteAgentState {
     /// daemon never knew about it, or it ended before the client
     /// reattached.
     ///
-    /// **Phase 24q-1 contract**: the sessions HashMap lock is held
+    /// **Lock contract**: the sessions HashMap lock is held
     /// across notifier swap → journal snapshot → flush. The reader
     /// thread blocks on the same lock for its own append path, so
     /// the sequence is deterministic:
@@ -495,7 +495,7 @@ impl RemoteAgentState {
         }
         drop(sessions);
 
-        // Phase 24t: replay-only path. The original sidecar process
+        // Replay-only path. The original sidecar process
         // is gone, but the on-disk journal survives. Read the file +
         // flush entries newer than `since_seq` through the supplied
         // notifier. No notifier swap (there's no future event to
@@ -751,7 +751,7 @@ struct RunningSidecar {
     stop: Arc<AtomicBool>,
 }
 
-/// Phase 24t: lightweight session entry rebuilt from an on-disk
+/// Lightweight session entry rebuilt from an on-disk
 /// journal whose original sidecar process is gone. Holds just enough
 /// metadata for `agent.list` to surface the session + for
 /// `agent.attach` to flush the journal file through the new notifier.
@@ -762,7 +762,7 @@ struct EndedAgentSession {
     workspace_dir: Option<String>,
     started_at_ms: i64,
     last_event_ms: i64,
-    /// Phase 24t: high-water-mark seq the daemon issued for this
+    /// High-water-mark seq the daemon issued for this
     /// session, captured at the time it transitioned to ended.
     /// Logged when the session moves to the ended-sessions table so
     /// an operator chasing "where did the live tail end?" can
@@ -785,7 +785,7 @@ struct ActiveAgentSession {
     workspace_dir: Mutex<Option<String>>,
     started_at_ms: i64,
     last_event_ms: Mutex<i64>,
-    /// Phase 24q-1: bounded ring of recent sidecar events. Read by
+    /// Bounded ring of recent sidecar events. Read by
     /// `agent.attach` to replay missed events to a reconnecting
     /// client (see [`journal`] for capacity + eviction semantics).
     /// Held behind `Mutex` rather than `RwLock` because every reader
@@ -889,7 +889,7 @@ fn reader_loop(
                 .lock()
                 .expect("session field mutex poisoned") = now_ms();
 
-            // Phase 24q-1: append to the journal BEFORE reading the
+            // Append to the journal BEFORE reading the
             // notifier. Holds the sessions HashMap lock for the
             // append so an `agent.attach` racing in can't observe
             // a notifier swap that's older than its journal
@@ -928,7 +928,7 @@ fn reader_loop(
             json!({
                 "requestId": id,
                 "event": value,
-                // Phase 24q-1 wire shape: the seq lets a desktop
+                // Wire shape: the seq lets a desktop
                 // track its high-water-mark per session so a future
                 // reattach can ask for `since_seq`. Additive
                 // backward-compatible field; older clients ignore
@@ -938,7 +938,7 @@ fn reader_loop(
         );
 
         if completed {
-            // Phase 24t: instead of dropping the session outright,
+            // Instead of dropping the session outright,
             // pluck out the metadata + journal path so we can surface
             // it through `agent.list` as `endedReplayOnly` and serve
             // future cold attaches from the on-disk file.
@@ -964,7 +964,7 @@ fn reader_loop(
     }
 }
 
-/// Phase 24t: drain the metadata + disk-writer path out of an
+/// Drain the metadata + disk-writer path out of an
 /// `ActiveAgentSession` so the entry can move into the
 /// `ended_sessions` map. Returns `None` when the journal has no disk
 /// mirror — there's nothing to flush from, so a future

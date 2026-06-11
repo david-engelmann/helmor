@@ -29,7 +29,7 @@ use helmor_lib::remote::{
     ServerContext, StdoutNotifier,
 };
 
-/// Phase 23b: construct the `RemoteAgentState` the daemon will use
+/// Construct the `RemoteAgentState` the daemon will use
 /// to bridge `agent.*` RPCs into a `helmor-sidecar` subprocess.
 /// Resolves the sidecar binary from `HELMOR_SIDECAR_PATH`; when the
 /// env var isn't set, returns a `disabled` state that surfaces a
@@ -53,7 +53,7 @@ fn build_agent_state() -> agent::RemoteAgentState {
             )
         }
     };
-    // Phase 24t: wire the on-disk journal directory so sessions
+    // Wire the on-disk journal directory so sessions
     // survive daemon restarts. Best-effort — a missing $HOME (the
     // daemon's running on a host that doesn't surface one) leaves
     // durability disabled instead of refusing to start.
@@ -143,8 +143,8 @@ fn parse_mode() -> Mode {
         return Mode::Proxy;
     }
     // Default — both for backward compat and for tests that spawn
-    // the binary directly. The auto-install path in phase 12 runs
-    // it with no args expecting `--serve-stdio` behavior.
+    // the binary directly. The auto-install path runs it with no
+    // args expecting `--serve-stdio` behavior.
     Mode::ServeStdio
 }
 
@@ -164,7 +164,7 @@ fn run_serve_stdio() -> ExitCode {
     let notifier = Arc::new(StdoutNotifier::new(Arc::clone(&stdout_writer)));
     let mut ctx = ServerContext::new(server_version, hostname);
     ctx.set_notifier(notifier);
-    // Phase 23b: wire the agent bridge so `agent.send` is functional
+    // Wire the agent bridge so `agent.send` is functional
     // when the operator has placed `helmor-sidecar` and set
     // `HELMOR_SIDECAR_PATH`. Absent that, the bridge stays in its
     // disabled state and `agent.send` surfaces a legible "not

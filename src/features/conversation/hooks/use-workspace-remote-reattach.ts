@@ -1,5 +1,5 @@
 /**
- * Workspace-level auto-reattach (phase 24m).
+ * Workspace-level auto-reattach.
  *
  * When the user opens a workspace whose remote runtime is currently
  * streaming an in-flight agent turn for *this* helmor session, the
@@ -59,13 +59,13 @@ export type WorkspaceRemoteReattachState = {
 	/** Last error message from the reattach loop or attach RPC. */
 	error: string | null;
 	/**
-	 * Phase 24r: total journal entries the daemon is flushing on
+	 * Total journal entries the daemon is flushing on
 	 * this attach. `null` until the attach RPC resolves. The chip
 	 * renders "Rebuilding history (N events)" when `> 0`.
 	 */
 	replayedCount: number | null;
 	/**
-	 * Phase 24r: earliest seq the daemon's ring can still deliver
+	 * Earliest seq the daemon's ring can still deliver
 	 * when our `since_seq` predated the oldest entry. `null` means
 	 * the cold replay was clean; a value means partial replay — the
 	 * chip surfaces a "history unavailable" banner.
@@ -156,7 +156,7 @@ export function useWorkspaceRemoteReattach({
 			// workspace's current session. The daemon mints the request
 			// id; the desktop side keeps its helmor session id stable
 			// across reconnects.
-			// Phase 24t: skip `endedReplayOnly` rows on the auto-attach
+			// Skip `endedReplayOnly` rows on the auto-attach
 			// path — those are sessions whose sidecar process is gone
 			// (daemon restarted, original session terminated cleanly).
 			// The desktop's local DB already holds the conversation;
@@ -215,7 +215,7 @@ export function useWorkspaceRemoteReattach({
 				);
 				if (disposed) return;
 				if (activeRequestIdRef.current !== match.requestId) return;
-				// Phase 24r: stash the daemon's replay diagnostics so the
+				// Stash the daemon's replay diagnostics so the
 				// header chip can render "rebuilding N events" + the gap
 				// banner. The streaming loop is already running; the
 				// response carries these alongside `accepted=true`.

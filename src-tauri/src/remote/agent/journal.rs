@@ -1,8 +1,8 @@
 //! Per-session ring buffer for sidecar events the daemon has emitted
 //! during a live agent turn.
 //!
-//! Phase 24q-1: foundation for desktop reattach replay. Before this
-//! module, the daemon was purely forwarding — events emitted before
+//! Foundation for desktop reattach replay. Before this module, the
+//! daemon was purely forwarding — events emitted before
 //! `agent.attach` swapped the notifier reached the previous client
 //! (or no one, on cold attach) and were gone. The journal keeps a
 //! bounded window of recent events so a fresh client can ask "give
@@ -13,10 +13,10 @@
 //!
 //! Sequence numbers are per-session, start at 1, monotonically
 //! increase, never reset for the lifetime of the session. The
-//! daemon does not persist them across daemon restarts (24t is a
-//! separate phase); a restart resets the counter to 1 and the
-//! desktop's stored `last_event_seq` becomes ahead of the daemon's
-//! head — `replay_since` reports that as a gap.
+//! daemon does not persist them across daemon restarts (the disk
+//! journal handles that separately); a restart resets the counter
+//! to 1 and the desktop's stored `last_event_seq` becomes ahead of
+//! the daemon's head — `replay_since` reports that as a gap.
 //!
 //! ## Eviction
 //!
@@ -55,7 +55,7 @@ pub struct EventJournal {
     /// outside the ring so eviction doesn't reset the counter.
     next_seq: u64,
     capacity: usize,
-    /// Phase 24t: optional disk-backed mirror. When set, every
+    /// Optional disk-backed mirror. When set, every
     /// successful in-memory append is also written to the on-disk
     /// JSONL file so the daemon can recover the history across
     /// restarts. A disk-write failure logs but does NOT abort the
@@ -111,7 +111,7 @@ impl EventJournal {
         }
     }
 
-    /// Phase 24t: attach a disk-backed writer so every subsequent
+    /// Attach a disk-backed writer so every subsequent
     /// `append` mirrors to the on-disk JSONL file. Idempotent — a
     /// second call overwrites the prior writer (test-only convenience;
     /// production wires the writer once at session creation).
@@ -136,7 +136,7 @@ impl EventJournal {
             ts_ms: now_ms(),
             payload,
         };
-        // Phase 24t: mirror to disk before pushing into the ring so
+        // Mirror to disk before pushing into the ring so
         // the on-disk order matches the in-memory order. A write
         // failure detaches the writer (defensive — repeated failures
         // would spam logs) but lets the in-memory append succeed.
@@ -159,7 +159,7 @@ impl EventJournal {
         self.next_seq.saturating_sub(1)
     }
 
-    /// Phase 24t: consume the journal + return the disk path it was
+    /// Consume the journal + return the disk path it was
     /// mirroring to, paired with the current `head_seq`. Used when
     /// the reader thread evicts a completed session into the
     /// `ended_sessions` map — we need the path to feed

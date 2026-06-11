@@ -1,11 +1,11 @@
-//! Transport abstraction for the desktop's sidecar plumbing (phase 23c).
+//! Transport abstraction for the desktop's sidecar plumbing.
 //!
-//! Pre-phase-23 the streaming pipeline talked to one specific thing —
-//! the desktop's local [`crate::sidecar::ManagedSidecar`]. Phase 23a/b
-//! lifted the sidecar onto the daemon; this commit makes the desktop
-//! transport-agnostic so a workspace bound to a remote runtime sends
-//! through the remote's `agent.send` instead of spawning a local
-//! sidecar.
+//! Originally the streaming pipeline talked to one specific thing —
+//! the desktop's local [`crate::sidecar::ManagedSidecar`]. The
+//! sidecar was then lifted onto the daemon; this transport layer
+//! makes the desktop transport-agnostic so a workspace bound to a
+//! remote runtime sends through the remote's `agent.send` instead
+//! of spawning a local sidecar.
 //!
 //! ## Design
 //!
@@ -88,7 +88,7 @@ pub trait SidecarTransport: Send + Sync + 'static {
     /// picked the right transport without downcasting.
     fn kind(&self) -> TransportKind;
 
-    /// Phase 24r: ask the daemon to (re)attach the per-session
+    /// Ask the daemon to (re)attach the per-session
     /// notifier to this client + flush journal entries newer than
     /// `params.since_seq`. Only meaningful on remote transports
     /// (the local sidecar has no journal). Default impl errors so
@@ -108,11 +108,11 @@ pub trait SidecarTransport: Send + Sync + 'static {
 /// process and talk to it directly. Wraps the existing
 /// [`ManagedSidecar`] verbatim — every method just delegates.
 ///
-/// Local workspaces (i.e. `workspaces.runtime_name IS NULL` after
-/// phase 22b) keep using this transport unchanged. The
-/// `ManagedSidecar` itself stays managed by Tauri state so its
-/// lifecycle (single instance for the lifetime of the desktop)
-/// matches the pre-phase-23 behaviour.
+/// Local workspaces (i.e. `workspaces.runtime_name IS NULL`) keep
+/// using this transport unchanged. The `ManagedSidecar` itself
+/// stays managed by Tauri state so its lifecycle (single instance
+/// for the lifetime of the desktop) matches the historical
+/// behaviour.
 pub struct LocalSidecarTransport {
     sidecar: Arc<ManagedSidecar>,
 }
@@ -212,7 +212,7 @@ impl SidecarTransport for RemoteSidecarTransport {
         // inside the callback by `request_id`. The filter keeps the
         // transport simple at the cost of a per-event string
         // comparison — for the spike's event volume this is fine.
-        // Phase 24-ish polish could reach into the RpcClient's
+        // A future polish could reach into the RpcClient's
         // subscriber list to register a per-id subscription.
         let handle = self.runtime.subscribe_agent_events(Box::new(move |notif| {
             if notif.request_id != needle {
@@ -306,8 +306,8 @@ impl RemoteSidecarTransport {
 ///
 /// Precedence:
 /// 1. `runtime_name` is `None`, empty, or `"local"` → local sidecar.
-/// 2. Registry missing → local (logged at warn — phase 22a's
-///    contract is "absent registry ≡ no remote bindings").
+/// 2. Registry missing → local (logged at warn — the contract is
+///    "absent registry ≡ no remote bindings").
 /// 3. Registry doesn't know the name → local (logged at warn — same
 ///    fall-through that `commands::resolve_runtime_for_call` uses).
 /// 4. Found a live runtime → wrap in [`RemoteSidecarTransport`].
@@ -362,7 +362,7 @@ pub fn resolve_transport(
 }
 
 /// Read the workspace's bound runtime name for a helmor session id.
-/// Consults the `workspaces.runtime_name` column first (phase 22b's
+/// Consults the `workspaces.runtime_name` column first (the
 /// load-bearing surface), then the legacy JSON sidecar binding store
 /// (`WorkspaceRuntimeBindings`) as a fallback for rows the backfill
 /// hasn't reached. `None` and `Some("local")` are equivalent —
@@ -680,7 +680,7 @@ mod tests {
         assert_eq!(aborts[0].request_id, "req-6");
     }
 
-    // ── resolver (phase 23c) ──────────────────────────────────────
+    // ── resolver ──────────────────────────────────────────────────
 
     fn is_local(t: &Arc<dyn SidecarTransport>) -> bool {
         t.kind() == TransportKind::Local
@@ -739,7 +739,7 @@ mod tests {
 
     #[test]
     fn resolver_falls_back_to_local_when_registry_missing() {
-        // Phase 22a's contract: "absent registry ≡ no remote
+        // Resolver contract: "absent registry ≡ no remote
         // bindings". The resolver should warn + degrade to local
         // rather than panic.
         let transport = resolve_transport_with_registry(dummy_sidecar(), Some("dev.box"), None);

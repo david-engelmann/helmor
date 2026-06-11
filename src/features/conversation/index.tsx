@@ -93,7 +93,7 @@ type WorkspaceConversationContainerProps = {
 	 *  `activeStreamsQuery`. Survives this container's unmount/remount,
 	 *  so follow-up routing/drain stays correct across start ↔ chat. */
 	activeStreams: readonly ActiveStreamSummary[];
-	/** Phase 24m: remote-runtime binding for the displayed workspace.
+	/** Remote-runtime binding for the displayed workspace.
 	 *  `null` for local workspaces; the actual registered runtime name
 	 *  otherwise. Drives the auto-reattach hook that follows live
 	 *  remote turns when the user opens (or returns to) a workspace
@@ -286,7 +286,7 @@ export const WorkspaceConversationContainer = memo(
 
 		const queueItems = useSubmitQueueForSession(displayedSessionId);
 
-		// Phase 24m: if the displayed workspace is remote-bound and the
+		// If the displayed workspace is remote-bound and the
 		// daemon is mid-stream on the displayed session, auto-attach so
 		// the chat follows the live turn. The hook is a no-op for local
 		// workspaces and bails when the composer-driven streaming
@@ -653,8 +653,8 @@ export const WorkspaceConversationContainer = memo(
 );
 
 /**
- * Inline status chip surfaced above the chat panel when phase 24m's
- * remote auto-reattach is actively following a live remote turn.
+ * Inline status chip surfaced above the chat panel when the remote
+ * auto-reattach is actively following a live remote turn.
  * Renders nothing when the hook is idle / errored — the chat itself
  * is the canonical surface; this is a small confirmation marker so
  * the user knows the desktop reconnected to a turn they didn't
@@ -666,7 +666,7 @@ function RemoteReattachStatusChip({
 	state: ReturnType<typeof useWorkspaceRemoteReattach>;
 }) {
 	if (!state.isReattaching && !state.terminalLabel) return null;
-	// Phase 24r: while replay is flushing, surface the journal count
+	// While replay is flushing, surface the journal count
 	// so the user knows the chat is rebuilding history — not stuck
 	// silent on a long SSH round-trip.
 	let label: string | null = state.terminalLabel;

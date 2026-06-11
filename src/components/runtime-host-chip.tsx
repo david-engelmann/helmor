@@ -1,4 +1,4 @@
-// Phase 22d: small inline chip surfacing the workspace's bound
+// Small inline chip surfacing the workspace's bound
 // remote runtime. Rendered in the sidebar row, the workspace panel
 // header, and inline inside confirmation modals — anywhere the user
 // would benefit from "this workspace runs on dev.box, not your

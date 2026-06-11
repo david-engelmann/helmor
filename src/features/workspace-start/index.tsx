@@ -79,7 +79,7 @@ type WorkspaceStartPageProps = {
 	mode: WorkspaceMode;
 	onModeChange: (mode: WorkspaceMode) => void;
 	/**
-	 * Phase 22c: registered runtimes available for the Where picker.
+	 * Registered runtimes available for the Where picker.
 	 * `null` selection (or absence in the list) = local runtime; any
 	 * other entry binds the new workspace to that registry entry on
 	 * create. The list should NOT include the built-in `local`
@@ -799,7 +799,7 @@ function sourceCardNumber(card: ContextCard): string {
 }
 
 /**
- * Phase 22c: "Where" picker rendered next to the mode dropdown in
+ * "Where" picker rendered next to the mode dropdown in
  * the Start page header. Lets the operator bind the next-created
  * workspace to a registered remote runtime instead of the local
  * default. `null` selection means local; any other name picks one

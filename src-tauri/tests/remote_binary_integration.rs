@@ -84,7 +84,7 @@ fn spawned_helmor_server_completes_handshake_via_rpc_client() {
 
 #[test]
 fn spawned_helmor_server_completes_handshake_via_command_transport() {
-    // Phase 21b end-to-end: drive the real binary through the new
+    // End-to-end: drive the real binary through the new
     // `CommandTransport` instead of the ad-hoc `connect_command` path.
     // Proves the trait dispatch lands on the same dispatcher (same
     // handshake, same wire shape) so the registry's command-transport
@@ -164,7 +164,7 @@ fn spawned_helmor_server_surfaces_dirty_paths_via_remote_ssh_runtime_trait() {
 
 #[test]
 fn spawned_helmor_server_exercises_every_workspace_inspector_method() {
-    // End-to-end vertical for phase 20b: spawn the real binary, drive
+    // End-to-end vertical: spawn the real binary, drive
     // every new inspector method against a real git repo, and assert
     // the bytes round-trip correctly. If `LocalRuntime`'s impls or the
     // _inner helpers in `workspace::files::*` regress, this test fails
@@ -505,8 +505,8 @@ fn spawned_helmor_server_lists_and_reattaches_to_running_terminal() {
     // (a) the scrollback comes back and (b) subsequent output flows
     // through the new subscription.
     //
-    // This is still within a single binary process — phase 19b adds
-    // the daemon mode that lets the terminal survive across binary
+    // This is still within a single binary process — daemon mode
+    // adds the ability for the terminal to survive across binary
     // restarts. This test just validates the list/attach surface
     // works end-to-end through the wire.
     let cmd = Command::new(HELMOR_SERVER_BIN);
@@ -608,7 +608,7 @@ fn spawned_helmor_server_lists_and_reattaches_to_running_terminal() {
         .expect("terminal.close");
 }
 
-// ── phase 19b: daemon-mode reattach across client lifetime ──────────
+// ── daemon-mode reattach across client lifetime ─────────────────────
 
 /// Connect to the running daemon via `helmor-server --proxy`, the
 /// same path the desktop's `connect_ssh` takes (modulo SSH). The
@@ -768,7 +768,7 @@ fn daemon_mode_terminal_survives_client_disconnect_and_reattach() {
 
 #[test]
 fn owned_terminals_persistence_round_trips_with_daemon_list_and_attach() {
-    // The phase 19c integration: simulate the desktop side around
+    // Integration: simulate the desktop side around
     // a real daemon. Walks through the exact flow the Tauri
     // commands wire up:
     //

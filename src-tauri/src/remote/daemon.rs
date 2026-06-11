@@ -3,7 +3,7 @@
 //! The single-shot `--serve-stdio` mode (the binary's original
 //! behavior) ties terminal lifetime to the SSH connection: the
 //! moment `ssh host helmor-server` exits, every PTY dies with it.
-//! That's incompatible with phase 19's reattach story.
+//! That's incompatible with the reattach story.
 //!
 //! Daemon mode fixes that by:
 //!
@@ -29,11 +29,10 @@
 //!   require root on the box, at which point there are bigger
 //!   problems.
 //! - No graceful shutdown. The daemon dies when the kernel kills
-//!   it (SIGTERM/SIGHUP) and PTYs die with it. Phase 19c will
-//!   persist the daemon's session list so a fresh daemon could
-//!   in principle pick up where the old one left off, but
-//!   re-spawning the actual shell processes isn't on the spike
-//!   roadmap.
+//!   it (SIGTERM/SIGHUP) and PTYs die with it. Persisting the
+//!   daemon's session list so a fresh daemon could in principle
+//!   pick up where the old one left off would mean also
+//!   re-spawning the actual shell processes — out of scope here.
 
 use std::io::{ErrorKind, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
@@ -241,10 +240,10 @@ pub fn run_daemon() -> Result<()> {
     // Cloning the Arc into each per-connection thread means the
     // PTYs outlive whichever connection happened to open them.
     let terminal_state: Arc<RemoteTerminalState> = Arc::new(RemoteTerminalState::new());
-    // Phase 23b: ditto for the agent bridge — daemon-global so the
-    // sidecar process + its active sessions outlive any single
-    // client reconnect (phase 19a's reattach story applies here
-    // too; 23d builds the agent-side equivalent).
+    // Ditto for the agent bridge — daemon-global so the sidecar
+    // process + its active sessions outlive any single client
+    // reconnect (the reattach story applies here too; the
+    // agent-side equivalent layers on top).
     let agent_state: Arc<super::agent::RemoteAgentState> = Arc::new(build_agent_state());
     let server_version = env!("CARGO_PKG_VERSION").to_string();
     let hostname = super::host::read_hostname();

@@ -1,4 +1,4 @@
-// Phase 20d: verify `useGitMutations` threads `workspaceId` to the
+// Verify `useGitMutations` threads `workspaceId` to the
 // underlying api wrappers so a remote-bound workspace mutates via the
 // binding-aware Tauri commands instead of the desktop's local
 // runtime. Without this, the stage/unstage/discard actions on a

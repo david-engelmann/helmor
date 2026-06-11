@@ -225,7 +225,7 @@ export const WorkspacePanelHeader = memo(function WorkspacePanelHeader({
 				>
 					{headerLeading}
 					{/*
-					 * Phase 22d: surface the bound remote runtime in the workspace
+					 * Surface the bound remote runtime in the workspace
 					 * header so an operator never loses track of where a workspace
 					 * runs. Rendered before the branch label so it occupies a fixed
 					 * slot — long branch names truncate but the chip stays put.

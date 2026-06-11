@@ -1,8 +1,8 @@
 //! Chat-integrated reattach event loop.
 //!
-//! Phase 24i shipped a streaming reattach surface, but its events
-//! only landed in a dev-panel event log. This module bridges those
-//! same events into the workspace's chat UI by reusing the existing
+//! An earlier iteration shipped a streaming reattach surface, but
+//! its events only landed in a dev-panel event log. This module
+//! bridges those same events into the workspace's chat UI by reusing the existing
 //! [`MessagePipeline`] + [`AgentStreamEvent`] channel — the same
 //! surface a fresh `send_agent_message_stream` emits through.
 //!
@@ -60,7 +60,7 @@ pub struct ReattachStreamInput<R: Runtime = tauri::Wry> {
     pub app: AppHandle<R>,
     pub on_event: Channel<AgentStreamEvent>,
     pub transport: Arc<dyn SidecarTransport>,
-    /// Phase 24r: the caller subscribes before issuing
+    /// The caller subscribes before issuing
     /// `agent.attach` so the daemon's journal flush can't slip
     /// through the gap between attach + subscribe. Hand the
     /// resulting receiver to the loop instead of re-subscribing.
@@ -188,20 +188,20 @@ fn run_reattach_loop<R: Runtime>(
     let started_at = Instant::now();
     let mut event_count: u64 = 0;
 
-    // Phase 24n: persist the reattached turn's messages to the local
+    // Persist the reattached turn's messages to the local
     // DB so a closed-and-reopened desktop sees the right history
     // instead of an empty thread after a reattach window. The
     // ExchangeContext mirrors the regular send path's shape;
     // `user_message_id` is left blank because reattach mints the
     // user-turn id inside the accumulator at `user_prompt` time
-    // (24s) rather than carrying it from a desktop-side send.
+    // rather than carrying it from a desktop-side send.
     //
-    // Phase 24s: the daemon's journal includes `user_prompt` events,
-    // so when the cold-replay (24r) flushes the journal, the
-    // accumulator emits a `MessageRole::User` turn and
-    // `drain_new_turns_into_db` persists it like any other turn.
-    // A desktop attaching to a session it never sent sees the
-    // original prompt at the top of the thread.
+    // The daemon's journal includes `user_prompt` events, so when
+    // the cold-replay flushes the journal, the accumulator emits a
+    // `MessageRole::User` turn and `drain_new_turns_into_db`
+    // persists it like any other turn. A desktop attaching to a
+    // session it never sent sees the original prompt at the top of
+    // the thread.
     //
     // `persist_turn_message` uses `INSERT ... ON CONFLICT(id) DO
     // NOTHING`, so if this desktop is also the original sender (its
@@ -483,7 +483,7 @@ fn drain_new_turns_into_db(
     let mut inserted_any = false;
     while *persisted_turn_count < total {
         let turn = pipeline.accumulator.turn_at(*persisted_turn_count);
-        // Phase 24q-2: persist the seq of the event that triggered
+        // Persist the seq of the event that triggered
         // this drain. When multiple turns flush from a single
         // accumulator state (e.g. terminal flush_pending), they all
         // get the SAME seq — they came from the same daemon-side
@@ -925,7 +925,7 @@ mod tests {
 
         // Run the loop on a worker so the test thread can fire
         // events into the transport while it spins.
-        // Phase 24r: caller subscribes before the spawn so the
+        // Caller subscribes before the spawn so the
         // daemon's journal flush can't race past us.
         let rx = transport_dyn.subscribe("rid-loop-1");
         let loop_handle = {
@@ -1265,7 +1265,7 @@ mod tests {
             .state::<ActiveStreams>()
             .try_register_for_session(competing));
 
-        // Phase 24r: caller subscribes upfront. The loop unsubscribes
+        // Caller subscribes upfront. The loop unsubscribes
         // when it bails — assertion below verifies that contract.
         let rx = transport_dyn.subscribe("rid-blocked");
         let loop_handle = {
@@ -1457,9 +1457,9 @@ mod tests {
         );
     }
 
-    /// Phase 24s: the daemon's journal includes `user_prompt`
-    /// events for the original send. A cold-attach (24r) replay
-    /// flushes the full journal, so the desktop sees the original
+    /// The daemon's journal includes `user_prompt` events for the
+    /// original send. A cold-attach replay flushes the full
+    /// journal, so the desktop sees the original
     /// user prompt at the top of the thread — even when it never
     /// sent the prompt itself. The accumulator emits a
     /// `MessageRole::User` turn for `user_prompt`, and

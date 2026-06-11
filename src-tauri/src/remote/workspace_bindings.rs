@@ -29,9 +29,9 @@
 //! schema migration with snapshot-test fallout. The spike scope is
 //! "demonstrate the shape", not "rewrite the workspace schema". A
 //! hand-written JSON file under `<data_dir>/workspace_runtime_bindings.json`
-//! matches the pattern phase 10 used for the registry's persisted
-//! list. If we keep the feature it'll graduate into the schema; if
-//! we don't, the file deletion is trivial.
+//! mirrors the registry's persisted-list pattern. If we keep the
+//! feature it'll graduate into the schema; if we don't, the file
+//! deletion is trivial.
 //!
 //! ## Lifecycle
 //!

@@ -83,7 +83,7 @@ type WorkspaceInspectorSidebarProps = {
 	workspaceRemoteUrl?: string | null;
 	workspaceState?: string | null;
 	/**
-	 * Phase 22d: name of the bound remote runtime (NULL / `"local"`
+	 * Name of the bound remote runtime (NULL / `"local"`
 	 * means use the local runtime). Surfaced in the
 	 * "permanently delete" toast so the operator knows which host's
 	 * workspace they're nuking.

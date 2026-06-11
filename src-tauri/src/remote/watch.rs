@@ -9,7 +9,7 @@
 //!
 //! ## Scope
 //!
-//! Phase 24g wires the daemon side end-to-end:
+//! This module wires the daemon side end-to-end:
 //! - `start_watch` registers a watcher whose callback emits
 //!   `workspace.fileEvent` notifications.
 //! - `stop_watch` drops the watcher (RAII) so its background thread

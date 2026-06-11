@@ -1,4 +1,4 @@
-// Phase 20d frontend tests: the inspector wrappers in `lib/api.ts`
+// Frontend tests: the inspector wrappers in `lib/api.ts`
 // route through the binding-aware Tauri commands and forward
 // `workspaceId` so a workspace pinned to a remote runtime fans the
 // call out over the wire. We assert by spying on Tauri's `invoke`:

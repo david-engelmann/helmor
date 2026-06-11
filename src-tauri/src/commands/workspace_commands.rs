@@ -21,7 +21,7 @@ fn notify_workspace_changed_in_background(app: AppHandle) {
 /// frontend should follow up with `finalize_workspace_from_repo` to kick
 /// off the slow git worktree creation; UI remains visible during that
 /// phase with state=initializing.
-/// Phase 22c: optional `runtime_name` binds the new workspace to a
+/// The optional `runtime_name` binds the new workspace to a
 /// registered runtime at creation time, no separate bind step
 /// required. `None` and `"local"` both produce a NULL column (= use
 /// the local runtime).
@@ -105,7 +105,7 @@ pub async fn prepare_chat_workspace(
     Ok(result)
 }
 
-/// Phase 22c: collapse `None`, `Some("")`, and `Some("local")` into
+/// Collapse `None`, `Some("")`, and `Some("local")` into
 /// `None` (the canonical "use the local runtime" form). Frontend
 /// sends `"local"` from the Where picker when the user wants the
 /// explicit local option; the backend stores NULL either way so
@@ -244,7 +244,7 @@ pub async fn list_branches_for_workspace_picker(
 /// for CLI / MCP / add-repository callers that don't benefit from the
 /// two-phase UI split.
 ///
-/// Phase 22c: accepts an optional `runtime_name` so the same command
+/// Accepts an optional `runtime_name` so the same command
 /// surface works for "create on remote" calls from MCP / CLI without
 /// forcing them to drive the two-phase flow. Non-UI callers
 /// (`add_repository_from_local_path`, the MCP bridge, etc.) call

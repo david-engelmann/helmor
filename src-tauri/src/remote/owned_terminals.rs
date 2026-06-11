@@ -1,10 +1,10 @@
 //! Desktop-side persistence of "terminals this desktop opened".
 //!
-//! Phase 19b made server-side PTYs survive client disconnect; what
-//! 19c does on top is *remember which terminals belong to this
-//! desktop instance*. When the user reopens Helmor and reconnects
-//! to a remote, the dev panel can show "you opened 3 terminals
-//! last time, all still running — click to reattach".
+//! Server-side PTYs survive client disconnect; on top of that, the
+//! desktop *remembers which terminals belong to this instance*. When
+//! the user reopens Helmor and reconnects to a remote, the dev panel
+//! can show "you opened 3 terminals last time, all still running —
+//! click to reattach".
 //!
 //! The store is intentionally a sidecar JSON at
 //! `<data_dir>/owned_terminals.json`, mirroring the
@@ -154,8 +154,8 @@ impl OwnedTerminals {
     /// become meaningless since the daemon dies with the SSH
     /// session. (For the spike's terminology: a disconnect is a
     /// user-initiated severing of the registry entry, not a
-    /// liveness blip; phase 9's tombstone path doesn't trigger
-    /// this clear.)
+    /// liveness blip; the tombstone path doesn't trigger this
+    /// clear.)
     pub fn clear_runtime(&self, runtime_name: &str) {
         let mut guard = self.inner.write().expect("owned_terminals rwlock poisoned");
         guard.remove(runtime_name);

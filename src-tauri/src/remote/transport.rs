@@ -1,12 +1,13 @@
 //! Transport seam: how the desktop reaches a `helmor-server`.
 //!
-//! Phases 1–20 wired the JSON-RPC pipe straight to `Command::new("ssh")`
-//! deep inside `RpcClient::connect_ssh`. That coupling is fine for a
-//! one-transport spike but doesn't survive contact with real
-//! deployments: users have Teleport (`tsh ssh host …`), Tailscale SSH
-//! (`tailscale ssh host …`), `kubectl exec`-based dev pods, and bespoke
-//! `Command` wrappers around all of the above. Phase 21 lifts the
-//! spawn into a trait so the rest of the codebase doesn't have to know
+//! The original wiring sent the JSON-RPC pipe straight to
+//! `Command::new("ssh")` deep inside `RpcClient::connect_ssh`. That
+//! coupling is fine for a one-transport spike but doesn't survive
+//! contact with real deployments: users have Teleport
+//! (`tsh ssh host …`), Tailscale SSH (`tailscale ssh host …`),
+//! `kubectl exec`-based dev pods, and bespoke `Command` wrappers
+//! around all of the above. The transport refactor lifts the spawn
+//! into a trait so the rest of the codebase doesn't have to know
 //! which of those is in play.
 //!
 //! ## Why a trait
@@ -20,16 +21,16 @@
 //! right ergonomics for the registry path and keeps adding new
 //! transports a one-file change.
 //!
-//! ## Scope after phase 21b
+//! ## Scope
 //!
-//! Two production transports today: [`OpenSshTransport`] (verbatim
-//! lift of the pre-phase-21 `connect_ssh` arg-building) and
-//! [`CommandTransport`] (any user-supplied argv list — Teleport,
-//! Tailscale SSH, `kubectl exec`, etc.). The persistence layer's
+//! Two production transports today: [`OpenSshTransport`] (lift of
+//! the original `connect_ssh` arg-building) and [`CommandTransport`]
+//! (any user-supplied argv list — Teleport, Tailscale SSH,
+//! `kubectl exec`, etc.). The persistence layer's
 //! [`super::connection::RuntimeConnectionConfig`] grew a `Command`
 //! variant alongside the existing `Local` and `Ssh`; the registry
-//! restores all three transparently at boot. Phase 21c/d add SSH
-//! config maturity (`Include` directives + `Match` blocks).
+//! restores all three transparently at boot. SSH config maturity
+//! (`Include` directives + `Match` blocks) layered on later.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;

@@ -206,7 +206,7 @@ pub async fn get_workspace_branch_info(
     .await
 }
 
-// ── workspace inspector ops (phase 20c) ─────────────────────────────
+// ── workspace inspector ops ─────────────────────────────────────────
 //
 // Every command below routes through `resolve_runtime_for_call` so the
 // same `workspace_id` → binding precedence rule that `get_workspace_status`
@@ -543,8 +543,8 @@ fn search_workspace_inner(
     })
 }
 
-/// Pick the runtime the dispatch should land on. Phase 22b
-/// precedence: explicit `runtime_name` > `workspaces.runtime_name`
+/// Pick the runtime the dispatch should land on. Precedence:
+/// explicit `runtime_name` > `workspaces.runtime_name`
 /// column > JSON sidecar binding store > local runtime.
 ///
 /// Workspace-id resolution consults the DB column first so a
@@ -602,8 +602,8 @@ fn resolve_runtime_for_call_with_column(
         return Ok(ResolvedRuntime::without_override(runtime));
     }
     if let Some(id) = workspace_id.filter(|id| !id.is_empty()) {
-        // Phase 22b precedence: DB column wins over sidecar. Phase
-        // 22a's backfill ensured the column reflects every existing
+        // Precedence: DB column wins over sidecar. The startup
+        // backfill ensured the column reflects every existing
         // sidecar binding; subsequent writes go through both surfaces
         // (see `set_workspace_runtime_binding`) so the two stay in
         // sync until we can sunset the sidecar entirely.
@@ -1194,7 +1194,7 @@ pub async fn get_remote_runtime_auth_status(
     .await
 }
 
-/// Phase 23d: push an SDK API key (or clear it) into a remote
+/// Push an SDK API key (or clear it) into a remote
 /// runtime's secrets store. The daemon persists to
 /// `$HOME/.helmor/server/secrets.json` (mode 0600) and hot-pushes
 /// to the live sidecar via `updateConfig` — keys never persist on
@@ -1246,9 +1246,9 @@ pub async fn set_runtime_agent_auth(
 /// Snapshot the daemon's active agent sessions on `name`. The
 /// returned list is whatever the remote's `agent.list` knows about —
 /// including orphaned sessions left over from a desktop that crashed
-/// mid-stream. Drives the reattach UX (phase 24d): the desktop shows
-/// the user "the remote thinks turn X is still running" and offers an
-/// abort / attach affordance.
+/// mid-stream. Drives the reattach UX: the desktop shows the user
+/// "the remote thinks turn X is still running" and offers an abort
+/// / attach affordance.
 ///
 /// Refuses the built-in `local` runtime: the local sidecar is owned
 /// by the desktop's `ManagedSidecar` and tracks its in-flight turns
@@ -1381,7 +1381,7 @@ pub async fn attach_remote_agent_session(
     registry: tauri::State<'_, Arc<RuntimeRegistry>>,
     name: String,
     request_id: String,
-    // Phase 24q-2: when present, the command computes
+    // When present, the command computes
     // `since_seq = MAX(last_event_seq)` for this session row and
     // sends it to the daemon so the journal replay covers only
     // the gap. `None` means cold attach (daemon flushes the full
@@ -1558,11 +1558,11 @@ pub struct ReattachedAgentEvent {
     /// the daemon's `agent.event` notification. The frontend
     /// renders it via the same logic that handles live sends.
     pub event: serde_json::Value,
-    /// Phase 24q-2: daemon-side journal seq for this event. Used by
+    /// Daemon-side journal seq for this event. Used by
     /// the desktop's reattach loop to persist
     /// `session_messages.last_event_seq` and to track the next
     /// `since_seq` to send on reconnect. `None` for events from a
-    /// pre-24q-1 daemon — defensive only.
+    /// daemon that predates the journal wire shape — defensive only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<u64>,
 }
@@ -1574,20 +1574,20 @@ pub struct ReattachAgentStreamResult {
     /// means events are flowing, `false` means the session is gone
     /// and the frontend should treat the Channel as inert.
     pub found: bool,
-    /// Phase 24q-2: daemon's high-water-mark seq for this session.
+    /// Daemon's high-water-mark seq for this session.
     /// The frontend stashes this so a subsequent reattach can pass
     /// it back as `since_seq` without consulting the local DB. `0`
     /// when `found=false` or the journal is empty.
     #[serde(default)]
     pub last_seq: u64,
-    /// Phase 24q-2: number of journal entries the daemon flushed
+    /// Number of journal entries the daemon flushed
     /// to the new notifier during attach. The events arrive through
     /// `on_event` like any live event; this field lets the
     /// operator panel show "N event(s) replayed" without counting
     /// channel sends.
     #[serde(default)]
     pub replayed_count: u64,
-    /// Phase 24q-2: earliest seq still in the daemon's ring when
+    /// Earliest seq still in the daemon's ring when
     /// the caller's `since_seq` predates the oldest entry. `Some`
     /// means some events were evicted before this attach; the
     /// frontend should treat the resulting stream as a partial
@@ -1596,9 +1596,9 @@ pub struct ReattachAgentStreamResult {
     pub replay_gap: Option<u64>,
 }
 
-/// Result of [`attach_remote_agent_session`]. Phase 24q-2 swaps the
-/// bare `bool` return for a struct so the frontend can stash the
-/// daemon's `last_seq` for a future reattach + render replay-gap
+/// Result of [`attach_remote_agent_session`]. The struct return
+/// (vs. a bare `bool`) lets the frontend stash the daemon's
+/// `last_seq` for a future reattach + render replay-gap
 /// diagnostics. `found` carries the original contract.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -1618,7 +1618,7 @@ pub async fn reattach_remote_agent_session_stream(
     subscriptions: tauri::State<'_, Arc<RemoteAgentStreamSubscriptions>>,
     name: String,
     request_id: String,
-    // Phase 24q-2: when present, the command computes
+    // When present, the command computes
     // `since_seq = MAX(last_event_seq)` for this session row and
     // passes it to `agent.attach`. Daemon then replays only
     // entries `seq > since_seq`. `None` means cold attach.
@@ -2253,7 +2253,7 @@ pub fn set_workspace_runtime_binding(
         .filter(|p| !p.is_empty());
     bindings.set(workspace_id.clone(), runtime_name.clone(), remote_path);
     persist_bindings(&bindings);
-    // Phase 22b dual-write: keep the column in sync with the sidecar
+    // Dual-write: keep the column in sync with the sidecar
     // so the resolver's column-first lookup sees the new binding
     // immediately. A failure here logs + continues — the sidecar is
     // still authoritative and the next boot's backfill will catch up.
@@ -2305,7 +2305,7 @@ pub fn clear_workspace_runtime_binding(
 ) -> CmdResult<()> {
     bindings.clear(&workspace_id);
     persist_bindings(&bindings);
-    // Phase 22b dual-write: clearing the binding means the column
+    // Dual-write: clearing the binding means the column
     // goes back to NULL (= "use the local runtime").
     if let Err(err) = crate::models::workspaces::update_workspace_runtime_name(&workspace_id, None)
     {
@@ -3020,7 +3020,7 @@ mod tests {
         );
     }
 
-    // ── column-vs-sidecar precedence (phase 22b) ──────────────────
+    // ── column-vs-sidecar precedence ──────────────────────────────
     //
     // These exercise `resolve_runtime_for_call_with_column` directly
     // so the precedence rule can be verified without a real DB.
@@ -3214,7 +3214,7 @@ mod tests {
         );
     }
 
-    // ── workspace inspector ops (phase 20c) ──────────────────────
+    // ── workspace inspector ops ───────────────────────────────────
     //
     // For each new command we exercise:
     //   1. The resolver picks the right runtime (explicit
@@ -3264,12 +3264,12 @@ mod tests {
         /// Override the `attach` return value so tests can exercise
         /// both the found / not-found branches.
         agent_attach_found: Mutex<bool>,
-        /// Phase 24q-2: override the daemon-reported `last_seq` so
-        /// tests can verify the desktop surfaces it on the result.
+        /// Override the daemon-reported `last_seq` so tests can
+        /// verify the desktop surfaces it on the result.
         agent_attach_last_seq: Mutex<u64>,
-        /// Phase 24q-2: override the daemon-reported `replayed_count`.
+        /// Override the daemon-reported `replayed_count`.
         agent_attach_replayed_count: Mutex<u64>,
-        /// Phase 24q-2: override the daemon-reported `replay_gap`.
+        /// Override the daemon-reported `replay_gap`.
         /// `None` (the default) means a clean replay; `Some(n)`
         /// signals the journal couldn't fully satisfy the request.
         agent_attach_replay_gap: Mutex<Option<u64>>,
@@ -3904,7 +3904,7 @@ mod tests {
             .any(|p| matches!(p.action, WorkspaceMutateFileAction::Unstage)));
     }
 
-    // ── workspace.search (phase 24e) ──────────────────────────────
+    // ── workspace.search ──────────────────────────────────────────
 
     #[test]
     fn search_workspace_routes_through_workspace_binding_by_default() {
@@ -4018,7 +4018,7 @@ mod tests {
         assert_eq!(result.matches[0].line_number, 17);
     }
 
-    // ── remote agent reattach (phase 24d) ─────────────────────────
+    // ── remote agent reattach ─────────────────────────────────────
 
     #[test]
     fn list_remote_agent_sessions_rejects_empty_name() {
@@ -4187,8 +4187,8 @@ mod tests {
         assert_eq!(stub.agent_attach_calls.lock().unwrap().len(), 1);
     }
 
-    /// Phase 24q-2: when the command supplies `since_seq`, it must
-    /// reach the daemon verbatim via `AgentAttachParams.since_seq`.
+    /// When the command supplies `since_seq`, it must reach the
+    /// daemon verbatim via `AgentAttachParams.since_seq`.
     #[test]
     fn attach_remote_agent_session_forwards_since_seq_to_runtime() {
         let (registry, stub) = registry_with_inspector_stub();
@@ -4207,7 +4207,7 @@ mod tests {
         assert_eq!(calls[0].since_seq, Some(42));
     }
 
-    /// Phase 24q-2: result fields mirror what the daemon reported
+    /// Result fields mirror what the daemon reported
     /// (last_seq / replayed_count / replay_gap) so the frontend can
     /// surface "N replayed" + "gap before X" diagnostics.
     #[test]
@@ -4232,7 +4232,7 @@ mod tests {
         assert_eq!(result.replay_gap, Some(50));
     }
 
-    /// Phase 24q-2: found=false zeroes out the replay fields. The
+    /// found=false zeroes out the replay fields. The
     /// daemon may still send sane values when found=false, but the
     /// desktop shouldn't surface them — there's no session to
     /// reattach to.
@@ -4263,13 +4263,13 @@ mod tests {
         assert_eq!(result.replay_gap, Some(50));
     }
 
-    // ── compute_since_seq (phase 24q-2) ────────────────────────────
+    // ── compute_since_seq ──────────────────────────────────────────
 
-    /// Phase 24q-2: the command-layer helper reads the desktop's
-    /// local `MAX(last_event_seq)` for the supplied session. This
-    /// test exercises the full DB-backed path through the production
-    /// pool by inserting a row with `last_event_seq=Some(7)` and
-    /// asserting the helper returns it.
+    /// The command-layer helper reads the desktop's local
+    /// `MAX(last_event_seq)` for the supplied session. This test
+    /// exercises the full DB-backed path through the production pool
+    /// by inserting a row with `last_event_seq=Some(7)` and asserting
+    /// the helper returns it.
     #[test]
     fn compute_since_seq_returns_max_seq_from_local_db() {
         use crate::testkit::TestEnv;
@@ -4305,7 +4305,7 @@ mod tests {
         assert_eq!(compute_since_seq(Some("hs-other")), None);
     }
 
-    // ── reattach_remote_agent_session_stream (phase 24i) ──────────
+    // ── reattach_remote_agent_session_stream ──────────────────────
 
     /// Build a Channel<ReattachedAgentEvent> that captures every
     /// `send` into a `Mutex<Vec<_>>` decoded from the InvokeResponseBody.
@@ -4447,7 +4447,7 @@ mod tests {
         assert_eq!(result.replay_gap, None);
     }
 
-    /// Phase 24q-2: `since_seq` reaches the daemon verbatim via
+    /// `since_seq` reaches the daemon verbatim via
     /// `AgentAttachParams.since_seq`, and the daemon-reported
     /// `last_seq` / `replayed_count` / `replay_gap` surface on the
     /// result so the frontend can stash them for the next reattach.
@@ -4682,7 +4682,7 @@ mod tests {
         assert_eq!(events_b[0].event["delta"], "for-B");
     }
 
-    // ── get_remote_runtime_diagnostics (phase 24j) ────────────────
+    // ── get_remote_runtime_diagnostics ────────────────────────────
 
     fn fake_client_diagnostics() -> crate::remote::RpcClientDiagnostics {
         crate::remote::RpcClientDiagnostics {

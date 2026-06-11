@@ -437,7 +437,7 @@ export const WorkspaceRowItem = memo(
 							<HyperText text={displayTitle} className="inline" />
 						</span>
 					);
-					// Phase 22d: surface the bound remote runtime inline so an
+					// Surface the bound remote runtime inline so an
 					// operator can tell at a glance "this row runs on dev.box"
 					// without opening the hover card. `shrink-0` on the chip
 					// keeps it visible even when the title truncates.

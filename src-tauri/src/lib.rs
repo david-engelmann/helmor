@@ -112,7 +112,7 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_mcp_bridge::init());
 
     let app = builder
-        // Phase 23c: ManagedSidecar is managed behind an `Arc` so the
+        // ManagedSidecar is managed behind an `Arc` so the
         // local-vs-remote `SidecarTransport` resolver can hold the
         // local-path sidecar in an `Arc<LocalSidecarTransport>` without
         // taking it out of Tauri's state.
@@ -293,7 +293,7 @@ pub fn run() {
                 remote::spawn_liveness_loop(app_handle, registry);
             }
 
-            // Phase 25a: auto-reconnect loop. The liveness loop flips
+            // Auto-reconnect loop. The liveness loop flips
             // a stubborn remote to Disconnected; this loop then walks
             // any Disconnected entries with a persisted config and
             // retries `connect_from_config` with exponential backoff
@@ -379,13 +379,13 @@ pub fn run() {
                     count = restored_count,
                     "remote-runner: restored per-workspace runtime bindings"
                 );
-                // Phase 22a: one-time copy of the JSON binding sidecar
-                // into `workspaces.runtime_name`. The column is dead
-                // data until phase 22b wires the resolver to read it;
-                // we backfill now so 22b's flip is a one-line change
-                // rather than a multi-touch migration. Failures log
-                // but don't roll back — the sidecar JSON stays
-                // authoritative until the resolver flip.
+                // One-time copy of the JSON binding sidecar into
+                // `workspaces.runtime_name`. The column is dead data
+                // until the resolver is wired to read it; we backfill
+                // now so the resolver flip is a one-line change rather
+                // than a multi-touch migration. Failures log but don't
+                // roll back — the sidecar JSON stays authoritative
+                // until the resolver flip.
                 let migration_input: Vec<(String, String)> = bindings_store
                     .list()
                     .into_iter()

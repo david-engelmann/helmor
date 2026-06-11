@@ -1,6 +1,6 @@
 //! Disk-backed persistence for the per-session event journal.
 //!
-//! Phase 24t: the in-memory ring buffer (`EventJournal`) is lost on
+//! The in-memory ring buffer (`EventJournal`) is lost on
 //! daemon restart, so a desktop reattaching post-crash sees nothing
 //! older than whatever the live session has emitted since startup.
 //! Mirroring every appended entry to an append-only JSONL file under

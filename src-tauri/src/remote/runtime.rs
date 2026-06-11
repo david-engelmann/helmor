@@ -7,16 +7,15 @@
 //! - [`LocalRuntime`] — wraps the current direct-call codebase.
 //!   This is the production default and the only path with full
 //!   behaviour today.
-//! - `RemoteRuntime` (future, phase 3+) — dispatches over the
-//!   JSON-RPC client to a `helmor-server` running on another
-//!   host.
+//! - `RemoteRuntime` (future) — dispatches over the JSON-RPC client
+//!   to a `helmor-server` running on another host.
 //!
-//! This phase only lands the trait, the local impl, and **one**
-//! method (`runtime_health`) so the seam is real and exercised.
-//! Migrating actual workspace / git / script ops onto it is the
-//! work of the following phases — each one moves a small set of
-//! methods over, with the local impl always staying a thin wrapper
-//! around the existing module functions.
+//! The trait, the local impl, and **one** method (`runtime_health`)
+//! land first so the seam is real and exercised. Migrating actual
+//! workspace / git / script ops onto it follows incrementally —
+//! each step moves a small set of methods over, with the local impl
+//! always staying a thin wrapper around the existing module
+//! functions.
 //!
 //! ## Why a trait instead of an enum
 //!
@@ -198,13 +197,13 @@ pub trait RemoteRuntime: Send + Sync {
         None
     }
 
-    // ── workspace inspector ops (phase 20a — surface only) ──────
+    // ── workspace inspector ops (surface only) ──────────────────
     //
     // Default bails surface as `HANDLER_FAILED` on the wire until
-    // phase 20b implements them on `LocalRuntime`. `RemoteSshRuntime`
-    // forwards via `client.call::<...>` from day one — its handlers
-    // are pure delegation, so the methods work as soon as the server
-    // side is filled in (independent ship of 20b).
+    // `LocalRuntime` implements them. `RemoteSshRuntime` forwards
+    // via `client.call::<...>` from day one — its handlers are pure
+    // delegation, so the methods work as soon as the server side is
+    // filled in.
 
     fn workspace_file_tree(
         &self,
@@ -366,15 +365,15 @@ pub trait RemoteRuntime: Send + Sync {
     /// same instance should be a harmless no-op.
     fn force_close(&self, _reason: &str) {}
 
-    // ── agent.* ops (phase 23a — surface only) ──────────────────
+    // ── agent.* ops (surface only) ──────────────────────────────
     //
-    // Phase 23a defines the wire shapes; the trait defaults bail.
+    // The trait defines the wire shapes; the defaults bail.
     // `RemoteSshRuntime` overrides delegate via `client.call`, so
-    // once phase 23b lands a `RemoteAgentState` on the daemon side,
-    // every remote runtime gets agent dispatch for free. `LocalRuntime`
-    // intentionally keeps the bail — local workspaces continue using
-    // `ManagedSidecar` directly through `agents::streaming::send`,
-    // not through the seam.
+    // once `RemoteAgentState` lands on the daemon side, every
+    // remote runtime gets agent dispatch for free. `LocalRuntime`
+    // intentionally keeps the bail — local workspaces continue
+    // using `ManagedSidecar` directly through
+    // `agents::streaming::send`, not through the seam.
 
     fn agent_send(
         &self,
@@ -405,7 +404,7 @@ pub trait RemoteRuntime: Send + Sync {
     }
 
     /// Push an SDK API key (or null to clear) into the runtime's
-    /// secrets store. Phase 23d: only the SSH-backed `RemoteSshRuntime`
+    /// secrets store. Only the SSH-backed `RemoteSshRuntime`
     /// implements this; the local runtime keeps using the desktop's
     /// existing `app.cursor_provider` settings row directly.
     fn agent_set_auth(
@@ -585,7 +584,7 @@ impl RemoteRuntime for LocalRuntime {
         })
     }
 
-    // ── workspace inspector ops (phase 20b — real impls) ─────────
+    // ── workspace inspector ops (real impls) ──────────────────────
     //
     // Each method does the seam-level sandbox (`workspace_dir` +
     // optional `relative_path` → absolute path that stays inside the
@@ -1277,7 +1276,7 @@ mod tests {
         );
     }
 
-    // ── workspace inspector ops (phase 20b) ──────────────────────
+    // ── workspace inspector ops ───────────────────────────────────
     //
     // Each method gets a happy-path test against a real tempdir git
     // repo plus the obvious failure modes (missing file, sandbox

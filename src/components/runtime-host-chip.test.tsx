@@ -1,4 +1,4 @@
-// Phase 22d unit tests for the host chip. Keeps the local-vs-remote
+// Unit tests for the host chip. Keep the local-vs-remote
 // branching honest — every call site (sidebar / header / toast)
 // relies on the same `isRemoteRuntime` predicate to decide whether
 // to render the chip at all.

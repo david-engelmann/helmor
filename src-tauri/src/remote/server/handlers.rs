@@ -291,11 +291,11 @@ pub(super) fn handle_terminal_attach(
         })
 }
 
-// ── workspace inspector ops (phase 20a — pure delegation) ───────────
+// ── workspace inspector ops (pure delegation) ───────────────────────
 //
 // Each handler just forwards to `ctx.runtime().workspace_*`. The
-// default trait impl bails until phase 20b backs `LocalRuntime` with
-// real reads / writes — at which point the same handler keeps working
+// default trait impl bails until `LocalRuntime` is backed with real
+// reads / writes — at which point the same handler keeps working
 // without changes here.
 
 pub(super) fn handle_workspace_file_tree(
@@ -638,7 +638,7 @@ pub(super) fn handle_workspace_stop_watch(
     })
 }
 
-// ── agent surfaces (phase 23b) ──────────────────────────────────────
+// ── agent surfaces ──────────────────────────────────────────────────
 //
 // Agent handlers route directly to `ctx.agent_state()` (the sidecar
 // bridge), not through `ctx.runtime()`. The runtime trait's agent_*

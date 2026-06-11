@@ -240,7 +240,7 @@ describe("createWorkspaceFromStartComposer", () => {
 		expect(result.preparedWorkingDirectory).toBe("/Users/me/repos/local-only");
 	});
 
-	it("forwards a selected runtime name into prepareWorkspaceFromRepo (phase 22c)", async () => {
+	it("forwards a selected runtime name into prepareWorkspaceFromRepo", async () => {
 		// Where-picker selection lands on the wire as the runtime_name
 		// positional arg. The backend collapses null / "local" into
 		// NULL on the row, so the equivalence is tested separately at

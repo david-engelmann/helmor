@@ -428,7 +428,7 @@ fn scripted_reply_close_after_drops_session_on_eof() {
     assert_eq!(notifier.captured.lock().unwrap().len(), 1);
 }
 
-// ── set_auth + secrets store (phase 23d) ────────────────────
+// ── set_auth + secrets store ────────────────────────────────
 
 fn temp_secrets_path() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
@@ -779,12 +779,12 @@ fn ensure_running_pushes_stored_cursor_key_on_first_spawn() {
     assert!(result.accepted);
 }
 
-// ── Phase 24q-1: event journal + replay-from-seq ─────────────────
+// ── Event journal + replay-from-seq ──────────────────────────────
 //
-// The four tests below exercise the daemon-side event journal added
-// in phase 24q-1: the reader thread tagging every notification with
-// a `seq`, plus `agent.attach` replaying journaled entries to a
-// reconnecting client.
+// The four tests below exercise the daemon-side event journal: the
+// reader thread tagging every notification with a `seq`, plus
+// `agent.attach` replaying journaled entries to a reconnecting
+// client.
 //
 // Journal unit tests (ring append, eviction gap signalling, etc.)
 // live alongside `EventJournal` in `super::journal::tests`. These
@@ -996,7 +996,7 @@ fn attach_with_caught_up_since_seq_replays_nothing() {
     );
 }
 
-// ── Phase 24t: durable journal + replay-only sessions ─────────────
+// ── Durable journal + replay-only sessions ────────────────────────
 
 #[test]
 fn terminal_event_moves_session_into_ended_replay_only_with_journal_on_disk() {

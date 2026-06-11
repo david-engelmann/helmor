@@ -277,13 +277,13 @@ fn workspace_status_runtime_failure_surfaces_as_handler_failed() {
     );
 }
 
-// ── workspace inspector dispatch (phase 20a) ──────────────────
+// ── workspace inspector dispatch ──────────────────────────────
 //
 // The trait defaults bail with "not yet implemented" — we verify
 // the dispatcher decodes params, hits the right trait method, and
-// surfaces the bail as `HANDLER_FAILED`. When phase 20b backs
-// `LocalRuntime` with real impls, the *dispatch* tests still hold;
-// only the underlying behaviour changes.
+// surfaces the bail as `HANDLER_FAILED`. When `LocalRuntime` is
+// backed with real impls, the *dispatch* tests still hold; only
+// the underlying behaviour changes.
 
 fn run_after_initialize(ctx: &ServerContext, req: JsonRpcRequest) -> JsonRpcResponse {
     dispatch_request(
@@ -428,7 +428,7 @@ fn workspace_mutate_file_default_bail_surfaces_as_handler_failed() {
     assert_bail_with_method_prefix(&resp, "workspace.mutateFile");
 }
 
-// ── agent.* default surfaces (phase 23b) ─────────────────────
+// ── agent.* default surfaces ──────────────────────────────────
 //
 // The ServerContext built by `with_runtime` carries a disabled
 // `RemoteAgentState` so unit tests don't accidentally spawn a
@@ -624,7 +624,7 @@ fn notification_request_returns_no_response_even_on_error() {
     assert!(resp.is_none());
 }
 
-// ── workspace.startWatch / stopWatch dispatch (phase 24g) ─────
+// ── workspace.startWatch / stopWatch dispatch ─────────────────
 
 #[test]
 fn workspace_start_watch_rejects_pre_initialize_requests() {

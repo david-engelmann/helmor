@@ -10,7 +10,7 @@
 //! hosts the user would connect to. Everything else (HostName, User,
 //! ProxyJump, ...) is ignored.
 //!
-//! ## `Include` resolution (phase 21c)
+//! ## `Include` resolution
 //!
 //! `Include <path>` directives are followed, mirroring ssh's own
 //! semantics:
@@ -29,7 +29,7 @@
 //! - Recursion is capped at [`MAX_INCLUDE_DEPTH`] (matches OpenSSH's
 //!   own MAX_INCLUDES) so a pathological chain can't OOM.
 //!
-//! ## `Match` blocks (phase 21d)
+//! ## `Match` blocks
 //!
 //! A subset of `Match` predicates is honoured so aliases gated by
 //! conditions actually surface (or get correctly excluded) in the
@@ -275,7 +275,7 @@ fn push_aliases(rest: &str, hosts: &mut BTreeSet<String>) {
     }
 }
 
-// ── Match block evaluation (phase 21d) ──────────────────────────────
+// ── Match block evaluation ──────────────────────────────────────────
 
 /// Result of evaluating a `Match` directive's guards against the
 /// current process context. Conflates "predicate fired falsy" and
@@ -1167,7 +1167,7 @@ Host base
         assert!(parse_hosts_from_path(&missing).is_empty());
     }
 
-    // ── Match blocks (phase 21d) ──────────────────────────────────
+    // ── Match blocks ──────────────────────────────────────────────
 
     #[test]
     fn match_user_block_active_when_user_matches_literal() {

@@ -44,7 +44,7 @@ export async function createWorkspaceFromStartComposer({
 	sourceBranch: string;
 	mode: WorkspaceMode;
 	/**
-	 * Phase 22c: registered runtime to bind the new workspace to.
+	 * Registered runtime to bind the new workspace to.
 	 * `null` (or omit) means "use the local runtime" — the backend
 	 * leaves `workspaces.runtime_name` NULL in that case.
 	 */

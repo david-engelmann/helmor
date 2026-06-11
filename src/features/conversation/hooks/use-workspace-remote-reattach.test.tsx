@@ -173,7 +173,7 @@ describe("useWorkspaceRemoteReattach", () => {
 	});
 
 	it("surfaces daemon replay diagnostics (replayedCount + replayGap) on the hook state", async () => {
-		// Phase 24r: after the attach RPC resolves, the hook stashes
+		// After the attach RPC resolves, the hook stashes
 		// the daemon-reported replay diagnostics so the workspace
 		// chip can render "Rebuilding history (N events)" + the gap
 		// banner when applicable.
@@ -260,7 +260,7 @@ describe("useWorkspaceRemoteReattach", () => {
 	});
 
 	it("skips endedReplayOnly sessions on the auto-attach path", async () => {
-		// Phase 24t: the on-disk journal survives daemon restart, so
+		// The on-disk journal survives daemon restart, so
 		// agent.list returns the past session as `endedReplayOnly`.
 		// Auto-reattach must NOT fire — the desktop's local DB already
 		// has the conversation; replaying the on-disk journal again

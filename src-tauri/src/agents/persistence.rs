@@ -90,10 +90,11 @@ pub(super) fn persist_turn_message(
     // Letting the second insert be a no-op keeps DB content
     // deterministic without forcing each writer to coordinate.
     //
-    // Phase 24q-2: `last_event_seq` stores the daemon-journal seq
-    // of the event that produced this row. NULL on local-sidecar
-    // and pre-24q-1 remote writes; the reattach call queries
-    // `MAX(last_event_seq)` per session as its `since_seq` cursor.
+    // `last_event_seq` stores the daemon-journal seq of the event
+    // that produced this row. NULL on local-sidecar writes and on
+    // remote writes from runtimes that predate the journal; the
+    // reattach call queries `MAX(last_event_seq)` per session as
+    // its `since_seq` cursor.
     let rows_changed = conn.execute(
         r#"
             INSERT INTO session_messages (
@@ -147,16 +148,16 @@ pub(super) fn persist_error_message(
     Ok(msg_id)
 }
 
-/// Phase 24q-2: the desktop's high-water-mark across all rows for a
-/// given session. Used by the remote-runner reattach call to compute
+/// The desktop's high-water-mark across all rows for a given
+/// session. Used by the remote-runner reattach call to compute
 /// `since_seq` — events newer than this haven't been persisted
 /// locally, so the daemon should replay them.
 ///
 /// Returns `None` when:
 /// - the session has no rows, or
-/// - all rows have `last_event_seq = NULL` (legacy rows pre-24q-2,
-///   or rows produced by the local-sidecar path which doesn't
-///   participate in the daemon's journal).
+/// - all rows have `last_event_seq = NULL` (legacy rows from before
+///   the journal landed, or rows produced by the local-sidecar path
+///   which doesn't participate in the daemon's journal).
 ///
 /// In both `None` cases the caller passes `since_seq=None` (cold
 /// attach), and the daemon flushes the full journal — the desktop's
@@ -180,7 +181,7 @@ pub(crate) fn max_event_seq_for_session(
     Ok(max.and_then(|n| u64::try_from(n).ok()))
 }
 
-/// Phase 24r: cold-attach gate. `false` when the desktop has any
+/// Cold-attach gate. `false` when the desktop has any
 /// persisted row for this session (warm reattach — let the caller
 /// use `MAX(last_event_seq)` to set `since_seq`); `true` when the
 /// session has no local rows at all (cold attach — caller passes
@@ -614,9 +615,9 @@ mod tests {
         assert!(parsed.get("allowedPrompts").is_none());
     }
 
-    /// Reattach (phase 24n) re-pushes the daemon's full event log
-    /// through a fresh accumulator, so turns the original sender
-    /// already persisted re-surface to `persist_turn_message`. The
+    /// Reattach re-pushes the daemon's full event log through a
+    /// fresh accumulator, so turns the original sender already
+    /// persisted re-surface to `persist_turn_message`. The
     /// `ON CONFLICT(id) DO NOTHING` clause lets the second insert be
     /// a no-op so the desktop never trips on a UNIQUE constraint.
     #[test]
@@ -724,7 +725,7 @@ mod tests {
 
     #[test]
     fn has_local_rows_for_session_distinguishes_empty_vs_legacy_rows() {
-        // Phase 24r cold-attach gate. Legacy rows (last_event_seq
+        // Cold-attach gate. Legacy rows (last_event_seq
         // NULL) MUST register as "has local rows" so the caller
         // doesn't ask the daemon to flush a journal on top of the
         // local-only content — otherwise we'd double-insert turns

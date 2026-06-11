@@ -778,7 +778,7 @@ export async function getRemoteRuntimeDiagnostics(
 	return invoke<RuntimeDiagnostics>("get_remote_runtime_diagnostics", { name });
 }
 
-// ── remote port forwarding (phase 24k) ─────────────────────────────
+// ── remote port forwarding ─────────────────────────────────────────
 
 /**
  * One active SSH port forward. The daemon-side OpenSSH master
@@ -1257,7 +1257,7 @@ export async function reconnectRemoteRuntime(
 }
 
 /**
- * Phase 23d: push an SDK API key (or clear it) into a remote
+ * Push an SDK API key (or clear it) into a remote
  * runtime's secrets store. The daemon persists to
  * `$HOME/.helmor/server/secrets.json` (mode 0600) and hot-pushes
  * to the live sidecar via `updateConfig` — keys NEVER persist on
@@ -1305,7 +1305,7 @@ export async function getRemoteRuntimeAuthStatus(
 	});
 }
 
-// ── workspace file watcher (phase 24g) ─────────────────────────────
+// ── workspace file watcher ─────────────────────────────────────────
 
 export type WorkspaceFileWatchKind = "local" | "remote";
 
@@ -1362,7 +1362,7 @@ export async function stopWorkspaceWatch(
 	});
 }
 
-// ── workspace search (phase 24e) ───────────────────────────────────
+// ── workspace search ───────────────────────────────────────────────
 
 /**
  * One match returned by `workspace.search`. `lineNumber` is
@@ -1414,7 +1414,7 @@ export async function searchWorkspace(args: {
 	});
 }
 
-// ── remote agent sessions (phase 24d — reattach UX) ────────────────
+// ── remote agent sessions (reattach UX) ────────────────────────────
 
 /**
  * One row from `agent.list` on a connected remote runtime. Mirrors
@@ -1424,7 +1424,7 @@ export async function searchWorkspace(args: {
  * hasn't yet seen the first event).
  */
 /**
- * Phase 24t: lifecycle phase of the session. `live` = sidecar
+ * Lifecycle phase of the session. `live` = sidecar
  * process still running; `endedReplayOnly` = the on-disk journal
  * survives but the sidecar is gone (daemon restart, terminal
  * event already fired, etc.). Auto-reattach skips
@@ -1544,11 +1544,11 @@ export async function abortRemoteAgentSession(
 }
 
 /**
- * Result of {@link attachRemoteAgentSession}. Phase 24q-2 swaps
- * the prior `boolean` return for a struct so the frontend can
- * stash the daemon's `lastSeq` for a future reattach + render the
- * `replayGap` warning when the journal's ring evicted entries the
- * desktop hadn't persisted yet.
+ * Result of {@link attachRemoteAgentSession}. The struct return
+ * (vs. a bare `boolean`) lets the frontend stash the daemon's
+ * `lastSeq` for a future reattach + render the `replayGap` warning
+ * when the journal's ring evicted entries the desktop hadn't
+ * persisted yet.
  */
 export type AttachRemoteAgentSessionResult = {
 	/** Mirrors the original `boolean` return contract. */
@@ -1617,7 +1617,7 @@ export type ReattachAgentStreamResult = {
 	 */
 	found: boolean;
 	/**
-	 * Phase 24q-2: daemon's high-water-mark seq for this session.
+	 * Daemon's high-water-mark seq for this session.
 	 * Stash this so a subsequent reattach can pass it back as
 	 * `since_seq` without a DB round-trip. `0` when `found=false`.
 	 */
@@ -3595,14 +3595,14 @@ export async function unstageWorkspaceFile(
 	}
 }
 
-// ── workspace inspector ops on the remote-runner seam (phase 20d) ────
+// ── workspace inspector ops on the remote-runner seam ────────────────
 //
-// Every wrapper below routes through the binding-aware Tauri commands
-// added in phase 20c. A `workspaceId` lets the backend resolve the
-// pinned runtime for that workspace (if any) so a workspace bound to
-// a remote pair flows over the wire transparently. Pass `undefined`
-// (or omit) for call sites that have no workspace context — the
-// backend falls back to the local runtime.
+// Every wrapper below routes through the binding-aware Tauri commands.
+// A `workspaceId` lets the backend resolve the pinned runtime for
+// that workspace (if any) so a workspace bound to a remote pair
+// flows over the wire transparently. Pass `undefined` (or omit) for
+// call sites that have no workspace context — the backend falls
+// back to the local runtime.
 
 export type WorkspaceMutateFileAction =
 	| { type: "write"; content: string }
@@ -4113,7 +4113,7 @@ export async function createWorkspaceFromRepo(
  * branch to attach to for `use_branch` (required). The kanban "create"
  * flow forwards the user's branch picker selection here.
  *
- * `runtimeName` (optional, phase 22c): binds the new workspace to a
+ * `runtimeName` (optional): binds the new workspace to a
  * registered remote runtime at creation time. `"local"` and `null` both
  * mean "use the local runtime" — the backend collapses them into a NULL
  * `workspaces.runtime_name` column so the resolver's NULL/"local"
@@ -4729,7 +4729,7 @@ export async function startAgentMessageStream(
 /**
  * Reattach to an in-flight remote agent turn and pipe its events
  * through the same `AgentStreamEvent` channel a fresh send uses.
- * Phase 24l: chat UI reuses `useStreaming`'s existing accumulator
+ * The chat UI reuses `useStreaming`'s existing accumulator
  * by calling this instead of `startAgentMessageStream` when the
  * desktop knows the session is mid-stream on the remote.
  *
@@ -4760,19 +4760,19 @@ export type AgentReattachRequest = {
 export type AgentReattachResponse = {
 	accepted: boolean;
 	/**
-	 * Phase 24r: daemon's high-water-mark seq for this session at
+	 * Daemon's high-water-mark seq for this session at
 	 * attach time. Stash for diagnostics + a future reattach can pass
 	 * it back as `since_seq` without a DB lookup.
 	 */
 	lastSeq: number;
 	/**
-	 * Phase 24r: number of journal entries the daemon will flush
+	 * Number of journal entries the daemon will flush
 	 * through the event stream as part of the replay. Drives the
 	 * "rebuilding history N/M" workspace chip.
 	 */
 	replayedCount: number;
 	/**
-	 * Phase 24r: earliest seq the daemon's ring can still deliver
+	 * Earliest seq the daemon's ring can still deliver
 	 * when the desktop's `since_seq` predated the oldest entry.
 	 * Non-null means the cold replay is partial; the chat surfaces a
 	 * "history unavailable" banner and continues live.

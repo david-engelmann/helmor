@@ -12,7 +12,7 @@ type ShowWorkspaceBrokenToastArgs = {
 	queryClient: QueryClient;
 	description?: string;
 	/**
-	 * Phase 22d: when present, the toast title + description name the
+	 * When present, the toast title + description name the
 	 * remote host so an operator can tell at a glance "this is the
 	 * dev.box workspace, not my local one" before clicking
 	 * `Permanently Delete`. Pass the workspace's `runtimeName` from the

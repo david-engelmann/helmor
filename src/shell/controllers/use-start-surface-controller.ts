@@ -50,7 +50,7 @@ export type StartSurfaceState = {
 	startSourceBranch: string;
 	startMode: WorkspaceMode;
 	/**
-	 * Phase 22c: selected runtime for the next workspace creation. `null`
+	 * Selected runtime for the next workspace creation. `null`
 	 * (or `"local"`) means "use the local runtime"; any other value
 	 * binds the new workspace's `workspaces.runtime_name` column to a
 	 * registered remote on insert. The Where picker in the Start page
@@ -78,7 +78,7 @@ export type StartSurfaceActions = {
 	selectRepository(repository: RepositoryCreateOption): void;
 	selectSourceBranch(branch: string): void;
 	selectMode(mode: WorkspaceMode): void;
-	/** Phase 22c: pick a registered runtime (or `null` for local). */
+	/** Pick a registered runtime (or `null` for local). */
 	selectRuntime(runtimeName: string | null): void;
 	selectBranchIntent(intent: WorkspaceBranchIntent): void;
 	stashPendingNewBranch(branch: string): void;
@@ -151,7 +151,7 @@ export function useStartSurfaceController(
 	>(null);
 	const [startPendingLinkedDirectories, setStartPendingLinkedDirectories] =
 		useState<readonly string[]>(EMPTY_STRING_LIST);
-	// Phase 22c: which registered runtime the next-created workspace
+	// Which registered runtime the next-created workspace
 	// should bind to. `null` = local (the historical default); any
 	// other value names a registry entry. The Where picker in
 	// `WorkspaceStartPage` reads + writes this via `selectRuntime`.
@@ -372,7 +372,7 @@ export function useStartSurfaceController(
 	);
 
 	const selectRuntime = useCallback((runtimeName: string | null) => {
-		// Phase 22c: `"local"` and `""` both collapse to null so the
+		// `"local"` and `""` both collapse to null so the
 		// controller's state stays canonical (null = local) and
 		// downstream code can rely on `!== null` to detect a remote pin.
 		const normalised =

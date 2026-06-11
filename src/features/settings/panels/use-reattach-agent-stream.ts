@@ -39,18 +39,18 @@ export type ReattachAgentStreamState = {
 	events: ReattachLogEntry[];
 	currentRequestId: string | null;
 	/**
-	 * Phase 24q-2: the daemon-reported journal high-water-mark
+	 * The daemon-reported journal high-water-mark
 	 * captured at attach time. The panel surfaces this so an
 	 * operator can verify `since_seq` semantics.
 	 */
 	lastSeq: number | null;
 	/**
-	 * Phase 24q-2: events the daemon replayed during attach.
+	 * Events the daemon replayed during attach.
 	 * Counts events the desktop's local DB hadn't already persisted.
 	 */
 	replayedCount: number | null;
 	/**
-	 * Phase 24q-2: earliest seq the daemon's ring can still
+	 * Earliest seq the daemon's ring can still
 	 * deliver when the desktop's `since_seq` predated the oldest
 	 * entry. Non-null means events were evicted; the frontend
 	 * should fall back to a full DB reload for the gap.
@@ -67,7 +67,7 @@ export type ReattachAgentStreamState = {
 
 /// Manage a single live raw-event reattach stream — the dev
 /// panel's "watch the wire" affordance. Pairs with
-/// `useChatReattachStream` (phase 24l) for the cooked, chat-
+/// `useChatReattachStream` for the cooked, chat-
 /// integrated equivalent. Keeping both lets the panel toggle
 /// between operator-friendly raw JSON + the user-friendly
 /// accumulator-rendered preview without duplicating the
@@ -210,7 +210,7 @@ export function useReattachAgentStream(): ReattachAgentStreamState {
 	};
 }
 
-// ── Phase 24l: chat-integrated reattach ─────────────────────────
+// ── Chat-integrated reattach ────────────────────────────────────
 
 /// Cooked event stream — the daemon's per-message events run
 /// through the desktop's existing `MessagePipeline` accumulator

@@ -273,8 +273,7 @@ impl RpcClient {
     /// arg-building lives on the transport now.
     ///
     /// `remote_binary` must already exist on the remote. The
-    /// auto-install path in phase 12 puts it there on first
-    /// connect.
+    /// auto-install path puts it there on first connect.
     pub fn connect_ssh(host: &str, remote_binary: &str) -> Result<Self> {
         Self::connect_ssh_with_options(host, remote_binary, false)
     }
@@ -298,8 +297,8 @@ impl RpcClient {
     /// trait owns the spawn details; this function owns the framer +
     /// handshake.
     ///
-    /// Phase 21a only exposes [`OpenSshTransport`] (the SSH path); the
-    /// command-based transport lands in phase 21b. New transports plug
+    /// The SSH path ([`OpenSshTransport`]) and the command-based
+    /// transport both go through this function. New transports plug
     /// in by implementing [`RemoteTransport`] — no changes here are
     /// needed for them to work.
     pub fn connect_with_transport(transport: Arc<dyn RemoteTransport>) -> Result<Self> {
@@ -451,9 +450,9 @@ impl RpcClient {
 
     /// Subscribe to `agent.event` notifications. Same RAII contract
     /// as [`Self::subscribe_terminal_events`]: hold the returned
-    /// handle for as long as you want events. Phase 23a wires the
-    /// subscription primitive; phase 23b's `RemoteAgentState` on the
-    /// daemon side is what actually emits the events.
+    /// handle for as long as you want events. The subscription
+    /// primitive wires up here; `RemoteAgentState` on the daemon
+    /// side is what actually emits the events.
     pub fn subscribe_agent_events<F>(&self, callback: F) -> NotificationSubscription
     where
         F: Fn(super::methods::AgentEventNotification) + Send + Sync + 'static,
@@ -957,13 +956,13 @@ impl RemoteRuntime for RemoteSshRuntime {
         Some(self.client.subscribe_terminal_events(callback))
     }
 
-    // ── workspace inspector ops (phase 20a — pure delegation) ────
+    // ── workspace inspector ops (pure delegation) ─────────────────
     //
     // The trait defaults bail; here we delegate every call straight
     // to the wire so the remote handlers do the real work. Until
-    // phase 20b lands matching `LocalRuntime` impls, these still
-    // surface `HANDLER_FAILED` on the server side (the server reuses
-    // the same trait), but the *plumbing* is in place — a single
+    // matching `LocalRuntime` impls land, these still surface
+    // `HANDLER_FAILED` on the server side (the server reuses the
+    // same trait), but the *plumbing* is in place — a single
     // `LocalRuntime` impl flips both local and remote behaviour on.
 
     fn workspace_file_tree(
@@ -1173,12 +1172,12 @@ impl RemoteRuntime for RemoteSshRuntime {
         self.client.force_close(reason);
     }
 
-    // ── agent.* delegation (phase 23a — wire-only) ───────────────
+    // ── agent.* delegation (wire-only) ────────────────────────────
     //
-    // Until phase 23b lands `RemoteAgentState` on the daemon, the
-    // server side responds `HANDLER_FAILED` to every agent call —
-    // but the client-side plumbing is already in place so the flip
-    // is a one-line change in the server's dispatch table.
+    // Until `RemoteAgentState` lands on the daemon, the server side
+    // responds `HANDLER_FAILED` to every agent call — but the
+    // client-side plumbing is already in place so the flip is a
+    // one-line change in the server's dispatch table.
 
     fn agent_send(
         &self,
@@ -2000,7 +1999,7 @@ mod tests {
         );
     }
 
-    // ── connection diagnostics (phase 24j) ──────────────────────────
+    // ── connection diagnostics ──────────────────────────────────────
 
     #[test]
     fn diagnostics_pin_handshake_values_at_construction() {

@@ -71,9 +71,9 @@ pub struct ServerContext {
     terminal_state: Arc<RemoteTerminalState>,
     /// Live agent (sidecar) bridge. Shared across connections in
     /// daemon mode so the sidecar process outlives any one client —
-    /// phase 23d builds the full reattach story on top of this
-    /// shared registry. In single-connection mode (used by tests
-    /// and the legacy proxy entry point) the state is per-context.
+    /// the full reattach story builds on top of this shared
+    /// registry. In single-connection mode (used by tests and the
+    /// legacy proxy entry point) the state is per-context.
     agent_state: Arc<RemoteAgentState>,
     /// Live workspace file watchers keyed by `watch_id`.
     /// Per-context (per-connection) — watch ids are client-scoped,

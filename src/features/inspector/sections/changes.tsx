@@ -90,7 +90,7 @@ type ChangesSectionProps = {
 	workspaceRemoteUrl: string | null;
 	workspaceTargetBranch: string | null;
 	/**
-	 * Phase 22d: bound runtime name surfaced in destructive toasts
+	 * Bound runtime name surfaced in destructive toasts
 	 * (`"Permanently delete this workspace on dev.box?"`). NULL /
 	 * `"local"` means the workspace lives locally; the toast falls
 	 * back to host-agnostic copy.

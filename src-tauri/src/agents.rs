@@ -267,7 +267,7 @@ pub async fn send_agent_message_stream(
     let stream_id = Uuid::new_v4().to_string();
     let active_streams = app.state::<ActiveStreams>();
 
-    // Phase 23c: pick the right sidecar transport based on the
+    // Pick the right sidecar transport based on the
     // workspace's runtime binding. Anonymous streams + workspaces
     // bound to the local runtime keep going through the desktop's
     // own `ManagedSidecar`; workspaces bound to a registered remote
@@ -303,9 +303,9 @@ fn resolve_stream_working_directory(
 /// this command just subscribes + pumps events through the same
 /// pipeline + `Channel<AgentStreamEvent>` the regular send uses.
 ///
-/// Phase 24i shipped the raw-events surface (dev panel event log);
-/// phase 24l wires the same primitive into the chat UI so a
-/// reattached turn renders as if the desktop had originated it.
+/// The raw-events surface (dev panel event log) landed first; the
+/// chat UI wires the same primitive so a reattached turn renders as
+/// if the desktop had originated it.
 #[tauri::command]
 pub async fn reattach_agent_message_stream(
     app: AppHandle,
@@ -338,7 +338,7 @@ pub async fn reattach_agent_message_stream(
         .clone()
         .unwrap_or_else(|| request.model_id.clone());
 
-    // Phase 24r: subscribe BEFORE attach so the daemon's journal
+    // Subscribe BEFORE attach so the daemon's journal
     // flush (the first events fired against the freshly-swapped
     // notifier) reaches us. Compute `since_seq` from the local DB:
     //   - cold attach (no local rows) → `Some(0)`, full replay.
@@ -389,7 +389,7 @@ pub async fn reattach_agent_message_stream(
     })
 }
 
-/// Phase 24r: pick the `since_seq` to send on `agent.attach`.
+/// Pick the `since_seq` to send on `agent.attach`.
 /// Cold attach (no local rows) → `Some(0)` so the daemon flushes
 /// the full journal; warm attach → `MAX(last_event_seq)`. Both DB
 /// failures fall back to a cold attach: better to over-replay (the
@@ -455,18 +455,18 @@ pub struct AgentReattachResponse {
     /// just the IPC ack. A failed resolve / non-remote workspace
     /// surfaces as the command's Err, not as `accepted=false`.
     pub accepted: bool,
-    /// Phase 24r: daemon's high-water-mark seq at attach time.
+    /// Daemon's high-water-mark seq at attach time.
     /// The frontend stashes this for diagnostics + a future
     /// reconnect can pass it back as `since_seq`.
     #[serde(default)]
     pub last_seq: u64,
-    /// Phase 24r: number of journal entries the daemon is about
+    /// Number of journal entries the daemon is about
     /// to flush through the event stream as part of the replay.
     /// Drives the workspace header chip's "rebuilding N/M events"
     /// progress affordance.
     #[serde(default)]
     pub replayed_count: u64,
-    /// Phase 24r: earliest seq the daemon's ring can still
+    /// Earliest seq the daemon's ring can still
     /// deliver when the desktop's `since_seq` predated the oldest
     /// entry. `Some` means the cold replay is a partial catch-up;
     /// the chat header shows a "history unavailable; new turns
@@ -509,7 +509,7 @@ pub async fn stop_agent_stream(
             "provider": request.provider.unwrap_or_else(|| "claude".to_string()),
         }),
     };
-    // Phase 23d: route the stop through the same transport
+    // Route the stop through the same transport
     // resolver as the send. `request.session_id` is the helmor
     // session id (frontend reads it off `ActiveStreamSummary`),
     // which is what the resolver needs to look up the workspace's
@@ -594,7 +594,7 @@ pub async fn steer_agent_stream(
         }),
     };
 
-    // Phase 23d: route the steer through the workspace's bound
+    // Route the steer through the workspace's bound
     // transport. `request.session_id` is the helmor session id
     // (matches the resolver's contract on `send_agent_message_stream`
     // + `stop_agent_stream`). Remote-bound workspaces hit the
@@ -1258,13 +1258,13 @@ mod tests {
         std::env::remove_var("HELMOR_DATA_DIR");
     }
 
-    // ── compute_attach_since_seq (phase 24r) ──────────────────────
+    // ── compute_attach_since_seq ──────────────────────────────────
 
-    /// Phase 24r: cold-attach gate. A session with no local rows
-    /// must receive `Some(0)` so the daemon flushes its full
-    /// journal; a session with rows but no journal data falls
-    /// back to `None` from `MAX(...)`; a session with journal data
-    /// returns its high-water-mark.
+    /// Cold-attach gate. A session with no local rows must receive
+    /// `Some(0)` so the daemon flushes its full journal; a session
+    /// with rows but no journal data falls back to `None` from
+    /// `MAX(...)`; a session with journal data returns its
+    /// high-water-mark.
     #[test]
     fn compute_attach_since_seq_selects_cold_warm_paths() {
         use crate::testkit::TestEnv;
