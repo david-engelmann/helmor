@@ -181,30 +181,46 @@ plan exists if we're going to open one.
 
 **Estimate:** half a day.
 
-### U7 — PR-by-PR drafts
+### U7 — Single-PR artifact assembly
 
-**Why:** writing the PR descriptions forces the actual narrative
-work. Drafting them all before sending any reveals
-inconsistencies + missing pieces.
+**Plan revision (2026-06-11):** the original 12-PR split was
+abandoned after U6 surfaced upstream's actual PR-size tolerance —
+recent merged feats include +9 642 LOC (Smart Triage #658),
++8 145 LOC (Slack inbox #654), +6 041 LOC (local LLM #650), all
+single PRs. Splitting our 71k/4k upstream-bound diff into 12
+artificially-standalone slices would force feature-flag shims that
+don't survive into the final shape and would multiply reviewer
+context-switch cost. New plan: **one issue thread → one PR with
+the whole working remote-runtime surface.** If the maintainer asks
+for the split, U7's old 12-draft plan is the fallback (preserved
+in `docs/upstream-prs-planned.md` as the fallback section).
 
-**Work — for each planned PR:**
-- Title (conventional commits or whatever U6 reveals)
-- Description: motivation, what's in scope, what's NOT in scope,
-  tests, evidence link if any
-- Scope (LOC + files)
-- Dependencies on other PRs in the sequence
-- Verify the PR builds + tests cleanly **standalone** from
-  upstream `origin/main` (so we'd cherry-pick or rebase the
-  relevant commits onto a fresh branch from origin/main and run
-  CI locally before opening the PR)
-- Output: `docs/upstream-prs-drafts/<NN>-<slug>.md` per PR
+**Why:** the artifact is the contract with the reviewer. Every
+hour spent making the PR body explain itself is an hour the
+reviewer doesn't have to spend reverse-engineering the diff.
 
-**Exit:** every planned PR has a draft + standalone build
-verification.
+**Work:**
+- **Apply the 75 deferred `phase NN` comment cleanups** from
+  the U4 inventory (`docs/upstream-comment-cleanup.md`) — single
+  mechanical sweep, three rewrite patterns already documented
+- **Draft the PR body** (`docs/upstream-pr-body.md`): motivation,
+  architecture overview, what changed by area, testing /
+  evidence strategy, how to review, known follow-ups, references
+  to helmor-taper tapes
+- **Draft the discussion-issue body**
+  (`docs/upstream-issue-body.md`): trimmed from U6's ~450-word
+  draft to ~300 words, with the same architectural pitch
+- **Draft the changeset fragment** + **announcement fragment**
+  for the PR per `helmor-release` skill conventions
+- **Verify the standalone build**: rebase the full set onto a
+  fresh branch from `origin/main`, run the three test suites
+  + clippy + biome to confirm a clean upstream-ready diff
 
-**Estimate:** the heaviest phase. 1–2 days per PR if there are
-many; total scales with U1's count. Probably 1–2 weeks of focused
-work for the full set.
+**Exit:** PR body + issue body drafted, comment cleanup applied,
+changeset + announcement ready, `bun run test` green from the
+upstream-rebased branch, clippy clean.
+
+**Estimate:** 2–3 days (down from the original 1–2 weeks).
 
 ### U8 — Final sweep + GO/NO-GO
 

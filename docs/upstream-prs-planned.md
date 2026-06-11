@@ -8,6 +8,27 @@ Concretizes the prior `docs/plans/remote-runner-upstream-readiness.md`
 A1–A7 + B–H sketch into the actual PR sequence we'll execute, based
 on the code that's actually been built on the fork.
 
+## Plan revision (2026-06-11) — single PR, this doc kept as fallback
+
+U6's reconnaissance of `origin/main` showed upstream merges very
+large single PRs from its own contributors (Smart Triage #658 was
++9 642 LOC / 92 files; Slack inbox #654 was +8 145 LOC; local LLM
+#650 was +6 041 LOC). Splitting our ~25 000-LOC upstream-bound
+surface into 12 standalone slices would force feature-flag shims
+that don't survive in the final tree and would multiply reviewer
+context-switch cost across 12 review cycles.
+
+**Current plan: one issue thread → one PR with the complete
+remote-runtime surface.** The PR body explains the architecture
+and uses the helmor-taper recordings as visible-behavior evidence
+so the reviewer can judge "does this work?" without re-running the
+whole stack.
+
+**This 12-PR breakdown stays in the doc as the fallback** for the
+case where a maintainer asks for the split (e.g. "land PR 1 first
+and let's iterate"). It also remains a useful map of the code's
+internal layering for anyone reviewing the eventual single PR.
+
 ## Background
 
 The prior plan (`docs/plans/remote-runner-upstream-readiness.md`,
