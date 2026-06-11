@@ -111,6 +111,7 @@ impl AllowedMergeMethods {
 /// itself reported a benign "Could not resolve repository" error.
 pub(super) fn find_workspace_pr(context: &GithubContext) -> Result<Option<ChangeRequestInfo>> {
     let parsed: GraphqlEnvelope = match run_graphql(
+        &context.runner,
         &context.login,
         PR_LOOKUP_QUERY,
         &[
@@ -182,6 +183,7 @@ fn pr_info(node: PullRequestNode) -> ChangeRequestInfo {
 /// input to the merge / close mutations.
 pub(super) fn fetch_open_pr_node_id(context: &GithubContext) -> Result<Option<String>> {
     let parsed: GraphqlEnvelope = match run_graphql(
+        &context.runner,
         &context.login,
         PR_NODE_ID_QUERY,
         &[
@@ -212,7 +214,12 @@ pub(super) fn merge_pull_request(context: &GithubContext, pr_node_id: &str) -> R
     let Some(method) = methods.pick() else {
         bail!("Repository does not allow any merge method (merge / squash / rebase all disabled)");
     };
-    run_pr_mutation(&context.login, &merge_mutation_for(method), pr_node_id)
+    run_pr_mutation(
+        &context.runner,
+        &context.login,
+        &merge_mutation_for(method),
+        pr_node_id,
+    )
 }
 
 fn merge_mutation_for(method: MergeMethod) -> String {
@@ -230,6 +237,7 @@ mutation($prId: ID!) {{
 
 fn fetch_allowed_merge_methods(context: &GithubContext) -> Result<AllowedMergeMethods> {
     let parsed: serde_json::Value = match run_graphql_raw(
+        &context.runner,
         &context.login,
         REPO_MERGE_METHODS_QUERY,
         &[
@@ -269,16 +277,26 @@ fn fetch_allowed_merge_methods(context: &GithubContext) -> Result<AllowedMergeMe
 }
 
 /// Run the `closePullRequest` mutation for `pr_node_id`.
-pub(super) fn close_pull_request(login: &str, pr_node_id: &str) -> Result<()> {
-    run_pr_mutation(login, CLOSE_PR_MUTATION, pr_node_id)
+pub(super) fn close_pull_request(context: &GithubContext, pr_node_id: &str) -> Result<()> {
+    run_pr_mutation(
+        &context.runner,
+        &context.login,
+        CLOSE_PR_MUTATION,
+        pr_node_id,
+    )
 }
 
-fn run_pr_mutation(login: &str, mutation: &str, pr_node_id: &str) -> Result<()> {
-    let parsed: serde_json::Value = match run_graphql_raw(login, mutation, &[("prId", pr_node_id)])?
-    {
-        GraphqlOutcome::Auth => bail!("GitHub token was rejected"),
-        GraphqlOutcome::Ok(value) => value,
-    };
+fn run_pr_mutation(
+    runner: &crate::forge::command::ForgeRunner,
+    login: &str,
+    mutation: &str,
+    pr_node_id: &str,
+) -> Result<()> {
+    let parsed: serde_json::Value =
+        match run_graphql_raw(runner, login, mutation, &[("prId", pr_node_id)])? {
+            GraphqlOutcome::Auth => bail!("GitHub token was rejected"),
+            GraphqlOutcome::Ok(value) => value,
+        };
     if let Some(errors) = parsed.get("errors").and_then(|v| v.as_array()) {
         if !errors.is_empty() {
             let msgs: Vec<&str> = errors

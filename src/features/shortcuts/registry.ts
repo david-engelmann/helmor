@@ -129,6 +129,16 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
 		editable: true,
 	},
 	{
+		id: "workspace.search",
+		title: "Search workspace files",
+		description:
+			"Search all tracked files in the current workspace. Local workspaces use an in-process grep; remote-bound workspaces dispatch over SSH.",
+		group: "Workspace",
+		defaultHotkey: "Mod+Shift+S",
+		scopes: ["app"],
+		editable: true,
+	},
+	{
 		id: "script.run",
 		title: "Run / stop script",
 		group: "Actions",
@@ -189,6 +199,14 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
 		title: "Open settings",
 		group: "System",
 		defaultHotkey: "Mod+,",
+		scopes: ["app"],
+		editable: true,
+	},
+	{
+		id: "settings.openRemoteServers",
+		title: "Open Remote Servers settings",
+		group: "System",
+		defaultHotkey: "Mod+Shift+R",
 		scopes: ["app"],
 		editable: true,
 	},

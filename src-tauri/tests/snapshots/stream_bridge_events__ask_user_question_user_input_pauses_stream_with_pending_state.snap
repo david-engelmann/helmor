@@ -1,5 +1,6 @@
 ---
 source: tests/stream_bridge_events.rs
+assertion_line: 219
 expression: snapshot
 ---
 line_count: 3

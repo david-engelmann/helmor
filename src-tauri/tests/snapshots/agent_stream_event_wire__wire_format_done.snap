@@ -1,5 +1,6 @@
 ---
 source: tests/agent_stream_event_wire.rs
+assertion_line: 47
 expression: "to_value(AgentStreamEvent::Done\n{\n    provider: \"claude\".into(), model_id: \"opus-1m\".into(), resolved_model:\n    \"claude-opus-4-20250514\".into(), session_id:\n    Some(\"provider-session-1\".into()), working_directory:\n    \"/tmp/helmor\".into(), persisted: true,\n})"
 ---
 kind: done

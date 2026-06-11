@@ -7,6 +7,7 @@ import {
 	Laptop,
 	MessageCircle,
 	Plus,
+	Server,
 	Split,
 	X,
 } from "lucide-react";
@@ -77,6 +78,17 @@ type WorkspaceStartPageProps = {
 	onSelectBranch: (branch: string) => void;
 	mode: WorkspaceMode;
 	onModeChange: (mode: WorkspaceMode) => void;
+	/**
+	 * Registered runtimes available for the Where picker.
+	 * `null` selection (or absence in the list) = local runtime; any
+	 * other entry binds the new workspace to that registry entry on
+	 * create. The list should NOT include the built-in `local`
+	 * runtime — the picker always exposes a Local option as the first
+	 * choice.
+	 */
+	runtimes?: ReadonlyArray<{ name: string }>;
+	selectedRuntime?: string | null;
+	onSelectRuntime?: (runtimeName: string | null) => void;
 	/** Worktree mode only. */
 	branchIntent: WorkspaceBranchIntent;
 	onBranchIntentChange: (intent: WorkspaceBranchIntent) => void;
@@ -101,6 +113,9 @@ export function WorkspaceStartPage({
 	onSelectBranch,
 	mode,
 	onModeChange,
+	runtimes,
+	selectedRuntime,
+	onSelectRuntime,
 	branchIntent,
 	onBranchIntentChange,
 	onCreateAndCheckoutBranch,
@@ -588,6 +603,14 @@ export function WorkspaceStartPage({
 								)}
 							</DropdownMenuContent>
 						</DropdownMenu>
+						{runtimes && runtimes.length > 0 && onSelectRuntime ? (
+							<WhereRuntimePicker
+								runtimes={runtimes}
+								selected={selectedRuntime ?? null}
+								onSelect={onSelectRuntime}
+								disabled={!selectedRepository}
+							/>
+						) : null}
 						{/* Branch intent picker. Worktree mode only. */}
 						{mode === "worktree" ? (
 							<DropdownMenu>
@@ -773,4 +796,80 @@ function sourceCardNumber(card: ContextCard): string {
 	const bangIdx = card.externalId.lastIndexOf("!");
 	const idx = Math.max(hashIdx, bangIdx);
 	return idx === -1 ? "" : card.externalId.slice(idx + 1);
+}
+
+/**
+ * "Where" picker rendered next to the mode dropdown in
+ * the Start page header. Lets the operator bind the next-created
+ * workspace to a registered remote runtime instead of the local
+ * default. `null` selection means local; any other name picks one
+ * of the entries from `runtimes`.
+ *
+ * Hidden by the caller when `runtimes` is empty so the picker only
+ * appears once the operator has at least one remote registered —
+ * a fresh install never sees an extra disabled control.
+ */
+function WhereRuntimePicker({
+	runtimes,
+	selected,
+	onSelect,
+	disabled,
+}: {
+	runtimes: ReadonlyArray<{ name: string }>;
+	selected: string | null;
+	onSelect: (runtimeName: string | null) => void;
+	disabled?: boolean;
+}) {
+	const label = selected ?? "Local";
+	return (
+		<DropdownMenu>
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<DropdownMenuTrigger asChild>
+						<button
+							type="button"
+							disabled={disabled}
+							aria-label="Workspace runtime"
+							className="inline-flex h-7 cursor-interactive items-center gap-1 rounded-md px-1.5 text-[12px] font-medium text-muted-foreground outline-none transition-colors hover:bg-muted/45 hover:text-foreground focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+						>
+							<Server className="size-3.5 shrink-0" strokeWidth={1.8} />
+							<span>{label}</span>
+							<ChevronDown
+								className="size-3 shrink-0 text-muted-foreground"
+								strokeWidth={2}
+							/>
+						</button>
+					</DropdownMenuTrigger>
+				</TooltipTrigger>
+				<TooltipContent
+					side="top"
+					sideOffset={4}
+					className="rounded-md px-2 text-[12px] leading-none"
+				>
+					Where to run the workspace
+				</TooltipContent>
+			</Tooltip>
+			<DropdownMenuContent align="start" className="w-fit min-w-36">
+				<DropdownMenuItem
+					onClick={() => onSelect(null)}
+					className="gap-2 pr-3"
+					data-checked={selected === null ? "true" : undefined}
+				>
+					<Laptop className="size-3.5" strokeWidth={1.8} />
+					<span>Local</span>
+				</DropdownMenuItem>
+				{runtimes.map((runtime) => (
+					<DropdownMenuItem
+						key={runtime.name}
+						onClick={() => onSelect(runtime.name)}
+						className="gap-2 pr-3"
+						data-checked={selected === runtime.name ? "true" : undefined}
+					>
+						<Server className="size-3.5" strokeWidth={1.8} />
+						<span>{runtime.name}</span>
+					</DropdownMenuItem>
+				))}
+			</DropdownMenuContent>
+		</DropdownMenu>
+	);
 }

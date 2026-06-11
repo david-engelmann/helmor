@@ -47,8 +47,10 @@ describe("AssistantToolCall apply_patch", () => {
 	});
 });
 
-describe("AssistantToolCall default-collapsed", () => {
-	it("keeps a streaming Read collapsed until the user opens it", () => {
+describe("AssistantToolCall default-expand heuristic", () => {
+	it("keeps a streaming Read collapsed until a result arrives", () => {
+		// While the tool is still running there's nothing useful to
+		// show in the body — the chevron stays closed.
 		const { container } = render(
 			<AssistantToolCall
 				toolName="Read"
@@ -62,7 +64,7 @@ describe("AssistantToolCall default-collapsed", () => {
 		expect(details!.open).toBe(false);
 	});
 
-	it("keeps a finished Bash with output collapsed by default", () => {
+	it("auto-expands a finished Bash with short output", () => {
 		const { container } = render(
 			<AssistantToolCall
 				toolName="Bash"
@@ -73,8 +75,7 @@ describe("AssistantToolCall default-collapsed", () => {
 
 		const details = container.querySelector("details");
 		expect(details).not.toBeNull();
-		expect(details!.open).toBe(false);
-		// Output content should not be rendered until the user opens the details.
-		expect(screen.queryByText(/drwxr-xr-x/)).not.toBeInTheDocument();
+		expect(details!.open).toBe(true);
+		expect(screen.getByText(/drwxr-xr-x/)).toBeInTheDocument();
 	});
 });

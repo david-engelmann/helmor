@@ -39,6 +39,14 @@ pub struct SidecarRequest {
 #[derive(Debug, Clone)]
 pub struct SidecarEvent {
     pub raw: Value,
+    /// Monotonic sequence number assigned by the
+    /// remote daemon's event journal. `None` for the local sidecar
+    /// path (no journal there — the desktop is the only consumer)
+    /// or when a remote runtime predates the journal wire shape.
+    /// Threaded through to `session_messages.last_event_seq` so a
+    /// reconnect can ask the daemon for events newer than the
+    /// desktop's persisted high-water mark.
+    pub seq: Option<u64>,
 }
 
 impl SidecarEvent {
@@ -98,14 +106,24 @@ pub fn resolve_bundled_agent_paths() -> BundledAgentPaths {
         .unwrap_or_default()
 }
 
-/// Read Cursor API key from `app.cursor_provider`. None on missing/empty.
+/// Read Cursor API key. Track G moves the key into the macOS
+/// Keychain on platforms that support it; the legacy SQLite path
+/// stays as the fallback for non-macOS hosts + as the migration
+/// source for users upgrading from a release that wrote the key in
+/// plaintext. `None` on missing / empty / backend failure (the
+/// sidecar then runs unauthenticated, same as before).
 pub fn load_cursor_api_key() -> Option<String> {
-    let raw = crate::models::settings::load_setting_value("app.cursor_provider")
-        .ok()
-        .flatten()?;
-    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let key = parsed.get("apiKey")?.as_str()?.trim();
-    (!key.is_empty()).then(|| key.to_string())
+    match crate::keychain::read_cursor_api_key() {
+        Ok(Some(key)) => Some(key),
+        Ok(None) => None,
+        Err(err) => {
+            tracing::warn!(
+                error = %format!("{err:#}"),
+                "load_cursor_api_key: keychain read failed; treating as missing"
+            );
+            None
+        }
+    }
 }
 
 fn resolve_bundled_agent_paths_for_exe(exe: &std::path::Path) -> Option<BundledAgentPaths> {
@@ -634,7 +652,7 @@ impl ManagedSidecar {
                                 }
                                 continue;
                             }
-                            let event = SidecarEvent { raw };
+                            let event = SidecarEvent { raw, seq: None };
                             if dispatch_event(&listeners, event, trimmed) {
                                 event_count += 1;
                             }
@@ -665,6 +683,7 @@ impl ManagedSidecar {
                                 "message": "Agent process exited unexpectedly",
                                 "internal": true,
                             }),
+                            seq: None,
                         };
                         for (rid, tx) in map.iter() {
                             let mut evt = crash_event.clone();
@@ -795,7 +814,7 @@ mod tests {
             "session_id": "sess-abc",
             "message": {"role": "assistant", "content": [{"type": "text", "text": "hello"}]},
         });
-        let event = SidecarEvent { raw };
+        let event = SidecarEvent { raw, seq: None };
         assert_eq!(event.id(), Some("req-1"));
         assert_eq!(event.event_type(), "assistant");
         assert_eq!(event.session_id(), Some("sess-abc"));
@@ -808,7 +827,7 @@ mod tests {
     #[test]
     fn sidecar_event_handles_missing_fields() {
         let raw = serde_json::json!({"data": "something"});
-        let event = SidecarEvent { raw };
+        let event = SidecarEvent { raw, seq: None };
         assert_eq!(event.id(), None);
         assert_eq!(event.event_type(), "unknown");
         assert_eq!(event.session_id(), None);
@@ -826,6 +845,7 @@ mod tests {
                 "hook_name": "SessionStart:resume",
                 "session_id": "02ad5522-df10-4180-aef4-c17489f42ec2",
             }),
+            seq: None,
         };
         assert!(!hook_started.is_claude_session_init());
 
@@ -835,6 +855,7 @@ mod tests {
                 "subtype": "hook_response",
                 "session_id": "02ad5522-df10-4180-aef4-c17489f42ec2",
             }),
+            seq: None,
         };
         assert!(!hook_response.is_claude_session_init());
 
@@ -844,6 +865,7 @@ mod tests {
                 "subtype": "status",
                 "session_id": "152f1faa-85bf-40dd-aae3-0a3aa8d9abfa",
             }),
+            seq: None,
         };
         assert!(!status.is_claude_session_init());
 
@@ -852,6 +874,7 @@ mod tests {
                 "type": "assistant",
                 "session_id": "152f1faa-85bf-40dd-aae3-0a3aa8d9abfa",
             }),
+            seq: None,
         };
         assert!(!assistant.is_claude_session_init());
 
@@ -861,6 +884,7 @@ mod tests {
                 "subtype": "init",
                 "session_id": "152f1faa-85bf-40dd-aae3-0a3aa8d9abfa",
             }),
+            seq: None,
         };
         assert!(init.is_claude_session_init());
     }
@@ -876,6 +900,7 @@ mod tests {
             let tx = map.get("req-1").unwrap();
             tx.send(SidecarEvent {
                 raw: serde_json::json!({"type": "test"}),
+                seq: None,
             })
             .unwrap();
         }
@@ -934,8 +959,10 @@ mod tests {
         // Feed the dispatch entrypoint directly. Old broadcast would
         // have leaked the event below to both rx channels.
         let raw = serde_json::json!({ "type": "error", "message": "boom" });
-        let consumed =
-            sidecar.dispatch_for_test(SidecarEvent { raw }, r#"{"type":"error","message":"boom"}"#);
+        let consumed = sidecar.dispatch_for_test(
+            SidecarEvent { raw, seq: None },
+            r#"{"type":"error","message":"boom"}"#,
+        );
         assert!(!consumed, "no-id event should not count as delivered");
         assert!(rx1
             .recv_timeout(std::time::Duration::from_millis(50))
@@ -947,7 +974,10 @@ mod tests {
         // Sanity: an event WITH a matching id still reaches its listener.
         let raw_with_id = serde_json::json!({ "id": "req-1", "type": "end" });
         let consumed_id = sidecar.dispatch_for_test(
-            SidecarEvent { raw: raw_with_id },
+            SidecarEvent {
+                raw: raw_with_id,
+                seq: None,
+            },
             r#"{"id":"req-1","type":"end"}"#,
         );
         assert!(consumed_id);

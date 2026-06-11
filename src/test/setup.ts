@@ -303,6 +303,31 @@ if (typeof Element !== "undefined" && !Element.prototype.scrollIntoView) {
 	Element.prototype.scrollIntoView = () => {};
 }
 
+// A handful of API helpers (e.g. `subscribeUiMutations`) construct a Tauri
+// `Channel` via a *dynamic* `import("@tauri-apps/api/core")`, which can slip
+// past the static module mock above and reach the real `Channel`, whose
+// constructor reads `window.__TAURI_INTERNALS__.transformCallback`. Without
+// this stub those fire-and-forget calls reject and surface as unhandled
+// rejections that flake the suite. The stub returns a dummy callback id so
+// construction succeeds and the (no-op in tests) channel is harmless.
+{
+	const tauriWindow =
+		typeof window !== "undefined"
+			? (window as unknown as { __TAURI_INTERNALS__?: unknown })
+			: null;
+	if (tauriWindow && !tauriWindow.__TAURI_INTERNALS__) {
+		tauriWindow.__TAURI_INTERNALS__ = {
+			transformCallback: (
+				callback?: (response: unknown) => void,
+				_once = false,
+			) => {
+				void callback;
+				return Math.floor(Math.random() * 1_000_000);
+			},
+		};
+	}
+}
+
 if (
 	typeof window !== "undefined" &&
 	typeof window.ResizeObserver === "undefined"

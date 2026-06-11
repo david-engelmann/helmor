@@ -89,6 +89,13 @@ type ChangesSectionProps = {
 	workspaceBranch: string | null;
 	workspaceRemoteUrl: string | null;
 	workspaceTargetBranch: string | null;
+	/**
+	 * Bound runtime name surfaced in destructive toasts
+	 * (`"Permanently delete this workspace on dev.box?"`). NULL /
+	 * `"local"` means the workspace lives locally; the toast falls
+	 * back to host-agnostic copy.
+	 */
+	workspaceRuntimeName?: string | null;
 	changes: InspectorFileItem[];
 	editorMode: boolean;
 	activeEditor?: ActiveEditorTarget | null;
@@ -113,6 +120,7 @@ function ChangesSectionImpl({
 	workspaceBranch,
 	workspaceRemoteUrl,
 	workspaceTargetBranch,
+	workspaceRuntimeName,
 	changes,
 	editorMode,
 	activeEditor,
@@ -239,6 +247,7 @@ function ChangesSectionImpl({
 	} = useGitMutations({
 		workspaceId,
 		workspaceRootPath,
+		runtimeName: workspaceRuntimeName,
 		stagedChanges,
 		unstagedChanges,
 		queryClient,

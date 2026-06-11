@@ -14,7 +14,14 @@ import {
 } from "./preview-renderers";
 
 export type { ComposerPreviewPayload } from "@/lib/composer-insert";
-export { createFilePreviewLoader } from "./preview-loader";
+export {
+	FilePreviewProvider,
+	useFilePreviewContext,
+} from "./preview-context";
+export {
+	createFilePreviewLoader,
+	type FilePreviewContext,
+} from "./preview-loader";
 export {
 	PreviewErrorFrame,
 	PreviewLoadingFrame,

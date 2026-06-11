@@ -11,6 +11,7 @@ pub mod git;
 pub mod global_hotkey;
 pub mod image_store;
 mod import;
+pub mod keychain;
 pub mod lark;
 pub mod local_llm;
 pub mod logging;
@@ -19,6 +20,7 @@ pub mod mcp;
 pub mod models;
 pub mod pipeline;
 pub mod rate_limits;
+pub mod remote;
 pub mod schema;
 pub mod service;
 mod shell_env;
@@ -173,7 +175,11 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_mcp_bridge::init());
 
     let app = builder
-        .manage(sidecar::ManagedSidecar::new())
+        // ManagedSidecar is managed behind an `Arc` so the
+        // local-vs-remote `SidecarTransport` resolver can hold the
+        // local-path sidecar in an `Arc<LocalSidecarTransport>` without
+        // taking it out of Tauri's state.
+        .manage(std::sync::Arc::new(sidecar::ManagedSidecar::new()))
         .manage(agents::ActiveStreams::new())
         .manage(agents::SlashCommandCache::new())
         .manage(workspace::archive::ArchiveJobManager::new())
@@ -190,6 +196,19 @@ pub fn run() {
         .manage(triage::ActiveStatusStore::new())
         .manage(global_hotkey::GlobalHotkeyState::default())
         .manage(commands::forge_commands::ForgeAuthEdgeStore::default())
+        .manage(std::sync::Arc::new(remote::RuntimeRegistry::new()))
+        .manage(std::sync::Arc::new(
+            commands::remote_commands::RemoteTerminalSubscriptions::new(),
+        ))
+        .manage(std::sync::Arc::new(
+            commands::remote_commands::RemoteAgentStreamSubscriptions::new(),
+        ))
+        .manage(std::sync::Arc::new(
+            commands::workspace_watch::WorkspaceFileWatchManager::new(),
+        ))
+        .manage(std::sync::Arc::new(
+            commands::remote_port_forward::RemotePortForwardManager::new(),
+        ))
         .setup(|app| {
             // Ensure data directory structure exists
             data_dir::ensure_directory_structure()?;
@@ -365,6 +384,151 @@ pub fn run() {
                     tracing::debug!("host dispatcher channel closed");
                 })
                 .ok();
+            // Background poller flips the per-remote-runtime state
+            // chip when a ping fails (or recovers). The local entry
+            // is always Connected by construction; the loop only
+            // iterates over registered remotes.
+            {
+                let app_handle = app.handle().clone();
+                let registry = app
+                    .state::<std::sync::Arc<remote::RuntimeRegistry>>()
+                    .inner()
+                    .clone();
+                remote::spawn_liveness_loop(app_handle, registry);
+            }
+
+            // Auto-reconnect loop. The liveness loop flips
+            // a stubborn remote to Disconnected; this loop then walks
+            // any Disconnected entries with a persisted config and
+            // retries `connect_from_config` with exponential backoff
+            // until the user disconnects or the network heals. The
+            // chat banner subscribes to the matching mutation events
+            // to surface "reconnecting…" to the user.
+            {
+                let app_handle = app.handle().clone();
+                let registry = app
+                    .state::<std::sync::Arc<remote::RuntimeRegistry>>()
+                    .inner()
+                    .clone();
+                remote::spawn_auto_reconnect_loop(app_handle, registry);
+            }
+
+            // Restore the persisted remote-runtime list. Each entry
+            // either reconnects (lands as Connected) or becomes a
+            // tombstone with state=Disconnected so the user can hit
+            // Reconnect from the dev panel. Runs on the blocking pool
+            // because SSH spawns can take seconds.
+            {
+                let registry = app
+                    .state::<std::sync::Arc<remote::RuntimeRegistry>>()
+                    .inner()
+                    .clone();
+                let port_forward_manager = app
+                    .state::<std::sync::Arc<
+                        commands::remote_port_forward::RemotePortForwardManager,
+                    >>()
+                    .inner()
+                    .clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let dir = match data_dir::data_dir() {
+                        Ok(d) => d,
+                        Err(err) => {
+                            tracing::warn!(
+                                error = %format!("{err:#}"),
+                                "remote-runner: cannot resolve data dir; skipping restore"
+                            );
+                            return;
+                        }
+                    };
+                    let persisted = remote::persistence::load(&dir);
+                    if !persisted.entries.is_empty() {
+                        tracing::info!(
+                            count = persisted.entries.len(),
+                            "remote-runner: restoring persisted runtimes"
+                        );
+                        remote::persistence::restore_on_startup(&registry, persisted);
+                    }
+                    // Port-forward restore depends on the registry
+                    // being populated above — each forward looks up
+                    // its runtime by name to find the SSH host. Run
+                    // it here so the lookup hits the freshly-restored
+                    // entries instead of the empty registry.
+                    commands::remote_port_forward::restore_persisted_forwards(
+                        &registry,
+                        &port_forward_manager,
+                        &dir,
+                    );
+                });
+            }
+
+            // Hydrate the per-workspace runtime bindings store from
+            // its sidecar JSON file. Cheap synchronous read — small
+            // file, no network — so no spawn_blocking needed. Always
+            // registers *something* (even on data-dir resolution
+            // failure) so the command layer can always reach a state
+            // object.
+            let bindings_store = match data_dir::data_dir() {
+                Ok(dir) => remote::WorkspaceRuntimeBindings::load_from_disk(&dir),
+                Err(err) => {
+                    tracing::warn!(
+                        error = %format!("{err:#}"),
+                        "remote-runner: cannot resolve data dir; using empty bindings store"
+                    );
+                    remote::WorkspaceRuntimeBindings::new()
+                }
+            };
+            let restored_count = bindings_store.list().len();
+            if restored_count > 0 {
+                tracing::info!(
+                    count = restored_count,
+                    "remote-runner: restored per-workspace runtime bindings"
+                );
+                // One-time copy of the JSON binding sidecar into
+                // `workspaces.runtime_name`. The column is dead data
+                // until the resolver is wired to read it; we backfill
+                // now so the resolver flip is a one-line change rather
+                // than a multi-touch migration. Failures log but don't
+                // roll back — the sidecar JSON stays authoritative
+                // until the resolver flip.
+                let migration_input: Vec<(String, String)> = bindings_store
+                    .list()
+                    .into_iter()
+                    .map(|b| (b.workspace_id, b.runtime_name))
+                    .collect();
+                match models::workspaces::backfill_runtime_name_from_bindings(
+                    &migration_input,
+                ) {
+                    Ok(0) => {}
+                    Ok(written) => {
+                        tracing::info!(
+                            count = written,
+                            "remote-runner: copied workspace runtime bindings into workspaces.runtime_name"
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %format!("{err:#}"),
+                            "remote-runner: runtime_name backfill failed; the JSON sidecar is still authoritative"
+                        );
+                    }
+                }
+            }
+            app.manage(std::sync::Arc::new(bindings_store));
+
+            // Hydrate the desktop's "terminals I opened" sidecar. Like
+            // the bindings store, missing/corrupt file degrades to
+            // empty so a fresh install boots cleanly.
+            let owned_terminals = match data_dir::data_dir() {
+                Ok(dir) => remote::OwnedTerminals::load_from_disk(&dir),
+                Err(err) => {
+                    tracing::warn!(
+                        error = %format!("{err:#}"),
+                        "remote-runner: cannot resolve data dir; using empty owned-terminals store"
+                    );
+                    remote::OwnedTerminals::new()
+                }
+            };
+            app.manage(std::sync::Arc::new(owned_terminals));
 
             // Per-version silent re-check of the Helmor CLI symlink and
             // the Helmor Skills package. Runs once per app version
@@ -454,6 +618,7 @@ pub fn run() {
             agents::list_agent_model_sections,
             agents::list_cursor_models,
             agents::send_agent_message_stream,
+            agents::reattach_agent_message_stream,
             agents::stop_agent_stream,
             agents::list_active_streams,
             agents::steer_agent_stream,
@@ -476,6 +641,56 @@ pub fn run() {
             commands::settings_commands::get_app_settings,
             commands::settings_commands::get_claude_rate_limits,
             commands::settings_commands::get_codex_rate_limits,
+            commands::remote_commands::connect_command_runtime,
+            commands::remote_commands::connect_local_runtime,
+            commands::remote_commands::connect_remote_runtime,
+            commands::remote_commands::disconnect_remote_runtime,
+            commands::remote_commands::get_remote_runtime_diagnostics,
+            commands::remote_commands::get_runtime_health,
+            commands::remote_commands::get_workspace_branch_info,
+            commands::remote_commands::get_workspace_changes,
+            commands::remote_commands::get_workspace_file_tree,
+            commands::remote_commands::get_workspace_status,
+            commands::remote_commands::mutate_workspace_file,
+            commands::remote_commands::read_workspace_file,
+            commands::remote_commands::read_workspace_file_at_ref,
+            commands::remote_commands::stat_workspace_file,
+            commands::remote_commands::attach_remote_terminal,
+            commands::remote_commands::clear_workspace_runtime_binding,
+            commands::remote_commands::clone_workspace_to_runtime,
+            commands::remote_commands::abort_remote_agent_session,
+            commands::remote_commands::attach_remote_agent_session,
+            commands::remote_commands::reattach_remote_agent_session_stream,
+            commands::remote_commands::release_remote_agent_session_stream,
+            commands::remote_commands::close_remote_terminal,
+            commands::remote_commands::get_remembered_workspace_remote_path,
+            commands::remote_commands::list_owned_terminals,
+            commands::remote_commands::list_remote_agent_sessions,
+            commands::remote_commands::list_remote_runtimes,
+            commands::remote_commands::list_remote_terminals,
+            commands::remote_commands::list_ssh_host_details,
+            commands::remote_commands::list_ssh_hosts,
+            commands::remote_commands::list_ssh_identities,
+            commands::remote_commands::probe_ssh_host,
+            commands::remote_commands::ssh_agent_status,
+            commands::remote_commands::list_workspace_runtime_bindings,
+            commands::remote_commands::open_remote_terminal,
+            commands::remote_commands::reconnect_remote_runtime,
+            commands::remote_commands::reinstall_remote_daemon,
+            commands::remote_commands::install_remote_bundle,
+            commands::remote_commands::resize_remote_terminal,
+            commands::remote_commands::search_workspace,
+            commands::remote_commands::set_runtime_agent_auth,
+            commands::remote_commands::get_remote_runtime_auth_status,
+            commands::remote_commands::get_remote_runtime_metrics,
+            commands::remote_commands::set_workspace_runtime_binding,
+            commands::remote_commands::tail_remote_daemon_log,
+            commands::remote_commands::write_remote_terminal,
+            commands::workspace_watch::start_workspace_watch,
+            commands::workspace_watch::stop_workspace_watch,
+            commands::remote_port_forward::start_remote_port_forward,
+            commands::remote_port_forward::stop_remote_port_forward,
+            commands::remote_port_forward::list_remote_port_forwards,
             commands::local_llm_commands::detect_local_llm_hardware,
             commands::local_llm_commands::get_local_llm_status,
             commands::local_llm_commands::list_local_llm_catalog,

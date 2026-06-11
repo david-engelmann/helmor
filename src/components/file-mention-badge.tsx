@@ -9,6 +9,7 @@ import { useMemo } from "react";
 import {
 	createFilePreviewLoader,
 	InlineBadge,
+	useFilePreviewContext,
 } from "@/components/inline-badge";
 import { basename, isImageExtensionPath } from "@/lib/path-util";
 import { cn } from "@/lib/utils";
@@ -27,9 +28,13 @@ export function FileMentionBadge({
 }: FileMentionBadgeProps) {
 	const fileName = basename(path);
 	const isImage = isImageExtensionPath(path);
+	const previewCtx = useFilePreviewContext();
 	const filePreviewLoader = useMemo(
-		() => (isImage ? undefined : createFilePreviewLoader(path)),
-		[isImage, path],
+		() =>
+			isImage
+				? undefined
+				: createFilePreviewLoader(path, previewCtx ?? undefined),
+		[isImage, path, previewCtx],
 	);
 
 	const wrapperClass = cn(compact && "text-small", className);

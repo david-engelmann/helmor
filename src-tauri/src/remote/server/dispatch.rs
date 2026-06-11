@@ -1,0 +1,267 @@
+//! Request dispatch table.
+//!
+//! [`dispatch_request`] is the seam every RPC method funnels through:
+//! it owns the version-check gate, the params deserialisation, and
+//! the result envelope. Handlers in [`super::handlers`] stay tiny
+//! and pure (`fn(ctx, params) -> Result<R, JsonRpcError>`); the
+//! dispatcher binds them to method names and shuttles
+//! serde_json::Value back and forth.
+
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use serde_json::Value;
+
+use crate::remote::methods::{
+    AgentAbortMethod, AgentAttachMethod, AgentAuthStatusMethod, AgentListMethod, AgentSendMethod,
+    AgentSetAuthMethod, DaemonTailLogMethod, ForgeExecMethod, InitializeMethod, Method, PingMethod,
+    RpcMethod, RuntimeMetricsMethod, TerminalAttachMethod, TerminalCloseMethod, TerminalListMethod,
+    TerminalOpenMethod, TerminalResizeMethod, TerminalWriteMethod, WorkspaceBranchInfoMethod,
+    WorkspaceBundleBeginMethod, WorkspaceBundleChunkMethod, WorkspaceBundleEndMethod,
+    WorkspaceBundleMethod, WorkspaceChangesMethod, WorkspaceFileTreeMethod,
+    WorkspaceMutateFileMethod, WorkspaceReadFileAtRefMethod, WorkspaceReadFileMethod,
+    WorkspaceSearchMethod, WorkspaceStartWatchMethod, WorkspaceStatFileMethod,
+    WorkspaceStatusMethod, WorkspaceStopWatchMethod, WorkspaceUnbundleBeginMethod,
+    WorkspaceUnbundleChunkMethod, WorkspaceUnbundleFinishMethod, WorkspaceUnbundleMethod,
+};
+use crate::remote::protocol::{
+    error_codes, JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse,
+};
+
+use super::handlers::{
+    handle_agent_abort, handle_agent_attach, handle_agent_auth_status, handle_agent_list,
+    handle_agent_send, handle_agent_set_auth, handle_daemon_tail_log, handle_forge_exec,
+    handle_initialize, handle_ping, handle_runtime_metrics, handle_terminal_attach,
+    handle_terminal_close, handle_terminal_list, handle_terminal_open, handle_terminal_resize,
+    handle_terminal_write, handle_workspace_branch_info, handle_workspace_bundle,
+    handle_workspace_bundle_begin, handle_workspace_bundle_chunk, handle_workspace_bundle_end,
+    handle_workspace_changes, handle_workspace_file_tree, handle_workspace_mutate_file,
+    handle_workspace_read_file, handle_workspace_read_file_at_ref, handle_workspace_search,
+    handle_workspace_start_watch, handle_workspace_stat_file, handle_workspace_status,
+    handle_workspace_stop_watch, handle_workspace_unbundle, handle_workspace_unbundle_begin,
+    handle_workspace_unbundle_chunk, handle_workspace_unbundle_finish,
+};
+use super::ServerContext;
+
+/// Decode a JSON-RPC request, dispatch to the matching handler, and
+/// build the response envelope. Notifications (id absent) get `None`
+/// back so the binary's write loop skips the response write.
+pub fn dispatch_request(ctx: &ServerContext, req: JsonRpcRequest) -> Option<JsonRpcResponse> {
+    let id = req.id.clone();
+    let method: Method = match req.method.parse() {
+        Ok(m) => m,
+        Err(_) => {
+            return wrap_error(
+                &id,
+                error_codes::METHOD_NOT_FOUND,
+                format!("unknown method: {}", req.method),
+            );
+        }
+    };
+
+    // The handshake gate: every non-`initialize` method requires
+    // initialization to have happened first.
+    if method != Method::Initialize && !ctx.is_initialized() {
+        return wrap_error(
+            &id,
+            error_codes::NOT_INITIALIZED,
+            "client must call `initialize` before any other method",
+        );
+    }
+
+    // Track E2: record per-method latency + outcome around every
+    // handler call. The dispatcher is the natural seam — every
+    // method funnels through this match, so a single timing scope
+    // covers the whole catalog uniformly.
+    let started_at = std::time::Instant::now();
+    let outcome: Result<Value, JsonRpcError> = match method {
+        Method::Initialize => {
+            handle::<InitializeMethod, _>(req.params, |params| handle_initialize(ctx, params))
+        }
+        Method::Ping => handle::<PingMethod, _>(req.params, handle_ping),
+        Method::WorkspaceStatus => handle::<WorkspaceStatusMethod, _>(req.params, |params| {
+            handle_workspace_status(ctx, params)
+        }),
+        Method::WorkspaceBranchInfo => {
+            handle::<WorkspaceBranchInfoMethod, _>(req.params, |params| {
+                handle_workspace_branch_info(ctx, params)
+            })
+        }
+        Method::TerminalOpen => {
+            handle::<TerminalOpenMethod, _>(req.params, |params| handle_terminal_open(ctx, params))
+        }
+        Method::TerminalWrite => handle::<TerminalWriteMethod, _>(req.params, |params| {
+            handle_terminal_write(ctx, params)
+        }),
+        Method::TerminalResize => handle::<TerminalResizeMethod, _>(req.params, |params| {
+            handle_terminal_resize(ctx, params)
+        }),
+        Method::TerminalClose => handle::<TerminalCloseMethod, _>(req.params, |params| {
+            handle_terminal_close(ctx, params)
+        }),
+        Method::TerminalList => {
+            handle::<TerminalListMethod, _>(req.params, |params| handle_terminal_list(ctx, params))
+        }
+        Method::TerminalAttach => handle::<TerminalAttachMethod, _>(req.params, |params| {
+            handle_terminal_attach(ctx, params)
+        }),
+        Method::WorkspaceFileTree => handle::<WorkspaceFileTreeMethod, _>(req.params, |params| {
+            handle_workspace_file_tree(ctx, params)
+        }),
+        Method::WorkspaceChanges => handle::<WorkspaceChangesMethod, _>(req.params, |params| {
+            handle_workspace_changes(ctx, params)
+        }),
+        Method::WorkspaceReadFile => handle::<WorkspaceReadFileMethod, _>(req.params, |params| {
+            handle_workspace_read_file(ctx, params)
+        }),
+        Method::WorkspaceReadFileAtRef => {
+            handle::<WorkspaceReadFileAtRefMethod, _>(req.params, |params| {
+                handle_workspace_read_file_at_ref(ctx, params)
+            })
+        }
+        Method::WorkspaceStatFile => handle::<WorkspaceStatFileMethod, _>(req.params, |params| {
+            handle_workspace_stat_file(ctx, params)
+        }),
+        Method::WorkspaceMutateFile => {
+            handle::<WorkspaceMutateFileMethod, _>(req.params, |params| {
+                handle_workspace_mutate_file(ctx, params)
+            })
+        }
+        Method::WorkspaceSearch => handle::<WorkspaceSearchMethod, _>(req.params, |params| {
+            handle_workspace_search(ctx, params)
+        }),
+        Method::WorkspaceStartWatch => {
+            handle::<WorkspaceStartWatchMethod, _>(req.params, |params| {
+                handle_workspace_start_watch(ctx, params)
+            })
+        }
+        Method::WorkspaceStopWatch => handle::<WorkspaceStopWatchMethod, _>(req.params, |params| {
+            handle_workspace_stop_watch(ctx, params)
+        }),
+        Method::WorkspaceBundle => handle::<WorkspaceBundleMethod, _>(req.params, |params| {
+            handle_workspace_bundle(ctx, params)
+        }),
+        Method::WorkspaceUnbundle => handle::<WorkspaceUnbundleMethod, _>(req.params, |params| {
+            handle_workspace_unbundle(ctx, params)
+        }),
+        Method::WorkspaceBundleBegin => {
+            handle::<WorkspaceBundleBeginMethod, _>(req.params, |params| {
+                handle_workspace_bundle_begin(ctx, params)
+            })
+        }
+        Method::WorkspaceBundleChunk => {
+            handle::<WorkspaceBundleChunkMethod, _>(req.params, |params| {
+                handle_workspace_bundle_chunk(ctx, params)
+            })
+        }
+        Method::WorkspaceBundleEnd => handle::<WorkspaceBundleEndMethod, _>(req.params, |params| {
+            handle_workspace_bundle_end(ctx, params)
+        }),
+        Method::WorkspaceUnbundleBegin => {
+            handle::<WorkspaceUnbundleBeginMethod, _>(req.params, |params| {
+                handle_workspace_unbundle_begin(ctx, params)
+            })
+        }
+        Method::WorkspaceUnbundleChunk => {
+            handle::<WorkspaceUnbundleChunkMethod, _>(req.params, |params| {
+                handle_workspace_unbundle_chunk(ctx, params)
+            })
+        }
+        Method::WorkspaceUnbundleFinish => {
+            handle::<WorkspaceUnbundleFinishMethod, _>(req.params, |params| {
+                handle_workspace_unbundle_finish(ctx, params)
+            })
+        }
+        Method::AgentSend => {
+            handle::<AgentSendMethod, _>(req.params, |params| handle_agent_send(ctx, params))
+        }
+        Method::AgentAbort => {
+            handle::<AgentAbortMethod, _>(req.params, |params| handle_agent_abort(ctx, params))
+        }
+        Method::AgentList => {
+            handle::<AgentListMethod, _>(req.params, |params| handle_agent_list(ctx, params))
+        }
+        Method::AgentAttach => {
+            handle::<AgentAttachMethod, _>(req.params, |params| handle_agent_attach(ctx, params))
+        }
+        Method::AgentSetAuth => {
+            handle::<AgentSetAuthMethod, _>(req.params, |params| handle_agent_set_auth(ctx, params))
+        }
+        Method::AgentAuthStatus => handle::<AgentAuthStatusMethod, _>(req.params, |params| {
+            handle_agent_auth_status(ctx, params)
+        }),
+        Method::DaemonTailLog => {
+            handle::<DaemonTailLogMethod, _>(req.params, handle_daemon_tail_log)
+        }
+        Method::RuntimeMetrics => handle::<RuntimeMetricsMethod, _>(req.params, |params| {
+            handle_runtime_metrics(ctx, params)
+        }),
+        Method::ForgeExec => {
+            handle::<ForgeExecMethod, _>(req.params, |params| handle_forge_exec(ctx, params))
+        }
+    };
+
+    // Track E2: record after dispatch so the latency captures the
+    // handler's full execution. `method.as_str()` returns a static
+    // string ref the metrics registry stores verbatim.
+    ctx.metrics()
+        .record(method.as_str(), started_at.elapsed(), outcome.is_err());
+
+    let response = match outcome {
+        Ok(result) => JsonRpcResponse::success(id.clone(), result),
+        Err(err) => JsonRpcResponse::failure(id.clone(), err),
+    };
+    if id.is_notification() {
+        // Per JSON-RPC: notifications never get a response, even on
+        // error. We still run the handler for its side effects.
+        None
+    } else {
+        Some(response)
+    }
+}
+
+/// Adapt a strongly-typed handler `fn(params) -> Result<R, JsonRpcError>`
+/// to the dynamic params/value pipeline the dispatcher operates on.
+fn handle<M, F>(params: Value, handler: F) -> Result<Value, JsonRpcError>
+where
+    M: RpcMethod,
+    F: FnOnce(M::Params) -> Result<M::Result, JsonRpcError>,
+    M::Params: DeserializeOwned,
+    M::Result: Serialize,
+{
+    let parsed: M::Params = if params.is_null() {
+        // No params at all — try to decode an empty object so methods
+        // with optional fields still work.
+        serde_json::from_value(Value::Object(Default::default())).map_err(|err| {
+            JsonRpcError::new(
+                error_codes::INVALID_PARAMS,
+                format!("missing params for method `{}`: {err}", M::NAME),
+            )
+        })?
+    } else {
+        serde_json::from_value(params).map_err(|err| {
+            JsonRpcError::new(
+                error_codes::INVALID_PARAMS,
+                format!("invalid params for method `{}`: {err}", M::NAME),
+            )
+        })?
+    };
+    let result = handler(parsed)?;
+    serde_json::to_value(&result).map_err(|err| {
+        JsonRpcError::new(
+            error_codes::INTERNAL_ERROR,
+            format!("failed to serialise result for `{}`: {err}", M::NAME),
+        )
+    })
+}
+
+fn wrap_error(id: &JsonRpcId, code: i32, message: impl Into<String>) -> Option<JsonRpcResponse> {
+    if id.is_notification() {
+        // Errors on notifications are dropped silently — JSON-RPC
+        // does not allow responding to a notification at all.
+        return None;
+    }
+    Some(JsonRpcResponse::failure(
+        id.clone(),
+        JsonRpcError::new(code, message),
+    ))
+}

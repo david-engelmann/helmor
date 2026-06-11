@@ -20,7 +20,7 @@ pub(super) fn load_pipeline_jobs(
         "projects/{}/pipelines/{pipeline_id}/jobs?per_page=100",
         encode_path_component(&context.full_path),
     );
-    let output = glab_api(&context.remote.host, [endpoint.as_str()])?;
+    let output = glab_api(&context.runner, &context.remote.host, [endpoint.as_str()])?;
     if !output.success {
         bail!(
             "GitLab pipeline jobs lookup failed: {}",
@@ -38,7 +38,7 @@ pub(super) fn load_job_trace(context: &GitlabContext, job_id: i64) -> Result<Opt
         "projects/{}/jobs/{job_id}/trace",
         encode_path_component(&context.full_path),
     );
-    let output = glab_api(&context.remote.host, [endpoint.as_str()])?;
+    let output = glab_api(&context.runner, &context.remote.host, [endpoint.as_str()])?;
     if !output.success {
         return Ok(None);
     }

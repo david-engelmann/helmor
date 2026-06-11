@@ -207,7 +207,11 @@ pub fn list_repo_labels(
             "projects/{}/labels?per_page=100&with_counts=false",
             encode_path_component(&repo)
         );
-        let output = match glab_api(host, [path.as_str()]) {
+        let output = match glab_api(
+            &crate::forge::command::ForgeRunner::local(),
+            host,
+            [path.as_str()],
+        ) {
             Ok(output) => output,
             Err(error) => {
                 tracing::warn!(
@@ -725,7 +729,7 @@ fn apply_draft_filter_mrs(query: &mut Query, draft: Option<InboxDraftFilter>) {
 /// (`next_page_after`) which is good enough.
 fn run_glab(host: &str, login: &str, path: &str) -> Result<Option<CommandOutput>> {
     let _ = login; // glab is single-account-per-host; the CLI honors the host's bound token.
-    let output = glab_api(host, [path])?;
+    let output = glab_api(&crate::forge::command::ForgeRunner::local(), host, [path])?;
     if !output.success {
         let detail = command_detail(&output);
         if looks_like_auth_error(&detail) {
@@ -834,7 +838,11 @@ fn parse_external_reference(external_id: &str) -> Result<(String, i64)> {
 fn fetch_issue_detail(host: &str, external_id: &str) -> Result<Option<InboxItemDetail>> {
     let (project, iid) = parse_external_reference(external_id)?;
     let path = format!("projects/{}/issues/{iid}", encode_path_component(&project));
-    let output = match glab_api(host, [path.as_str()]) {
+    let output = match glab_api(
+        &crate::forge::command::ForgeRunner::local(),
+        host,
+        [path.as_str()],
+    ) {
         Ok(output) => output,
         Err(error) => {
             let message = format!("{error:#}");
@@ -877,7 +885,11 @@ fn fetch_mr_detail(host: &str, external_id: &str) -> Result<Option<InboxItemDeta
         "projects/{}/merge_requests/{iid}",
         encode_path_component(&project)
     );
-    let output = match glab_api(host, [path.as_str()]) {
+    let output = match glab_api(
+        &crate::forge::command::ForgeRunner::local(),
+        host,
+        [path.as_str()],
+    ) {
         Ok(output) => output,
         Err(error) => {
             let message = format!("{error:#}");

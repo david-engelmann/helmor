@@ -1,0 +1,143 @@
+name: Remote server E2E
+
+# End-to-end test of the remote-runner SSH transport against a real
+# Linux `helmor-server` running in Docker (the layer the macOS-only
+# quality suite can't reach). Builds the daemon FOR Linux, runs it
+# headless in a container, and drives the desktop's real
+# `RemoteSshRuntime` over a genuine `ssh` hop.
+#
+# Both legs run NATIVELY on same-arch GitHub runners (arm64 on
+# `ubuntu-24.04-arm`) — no QEMU, no cross-sysroot. This is the only
+# place the Linux daemon build + SSH transport are exercised in CI;
+# everything else builds helmor-server on macOS only.
+
+on:
+  pull_request:
+    paths:
+      # Anything that can affect the daemon, the transport, the
+      # install path, or the harness itself.
+      - "src-tauri/src/remote/**"
+      - "src-tauri/src/agents/streaming/**"
+      - "src-tauri/src/bin/helmor-server.rs"
+      - "src-tauri/tests/remote_docker_e2e.rs"
+      - "src-tauri/tests/docker-e2e/**"
+      - "src-tauri/Cargo.toml"
+      - "src-tauri/Cargo.lock"
+      - ".github/workflows/remote-server-e2e.yml"
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: remote-server-e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CI: true
+  CARGO_TERM_COLOR: always
+
+jobs:
+  e2e:
+    name: SSH transport E2E (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            service: helmor-test-linux-amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            service: helmor-test-linux-arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Build the E2E daemon image
+        # Native same-arch build (the runner arch matches the target
+        # leg), so the in-container Rust compile + GTK link is native,
+        # not emulated. The image bakes a headless helmor-server +
+        # the GTK runtime libs and self-verifies `--version` at build
+        # time.
+        run: |
+          docker compose -f src-tauri/tests/docker-e2e/compose.yml \
+            build ${{ matrix.service }}
+
+      - name: Read pinned Rust channel from rust-toolchain.toml
+        # `dtolnay/rust-toolchain@master` is supposed to auto-detect
+        # `rust-toolchain.toml` when `toolchain:` is unset, but the
+        # auto-detect didn't fire in practice (the `toolchain` input
+        # came through as empty and `rustup` exploded with
+        # `invalid toolchain name ''`). Read the channel ourselves and
+        # pass it explicitly — keeps the CI compiler in lock-step with
+        # local dev without depending on the action's heuristic.
+        id: rust_channel
+        shell: bash
+        run: |
+          channel=$(awk -F '"' '/^channel/{print $2}' rust-toolchain.toml)
+          if [ -z "$channel" ]; then
+            echo "ERROR: failed to parse channel from rust-toolchain.toml" >&2
+            cat rust-toolchain.toml >&2
+            exit 1
+          fi
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # master 2026-02
+        with:
+          toolchain: ${{ steps.rust_channel.outputs.channel }}
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.0
+        with:
+          workspaces: src-tauri
+          key: e2e-${{ matrix.arch }}
+
+      - name: Install Tauri v2 Linux build deps
+        # The host-side test driver compiles `helmor_lib` (the test
+        # links the real `RemoteSshRuntime`), which transitively
+        # depends on `tauri` and its `glib-sys`/`gtk-sys`/`webkit2gtk`
+        # crates — they fail their build script without the matching
+        # system DEV libs. Mirrors the equivalent step in
+        # `publish-helmor-server.yml`.
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            pkg-config
+
+      - name: Prepare helmor_lib build
+        # `tauri-build` validates `tauri.conf.json`'s `resources:`
+        # entry (`../sidecar/dist/vendor/`), which is gitignored
+        # because it's normally produced by the sidecar build. The
+        # E2E test only needs `helmor_lib` itself — a transport unit
+        # test — and never reads the bundled resources, so an empty
+        # placeholder is enough to satisfy the validation.
+        run: |
+          mkdir -p sidecar/dist/vendor
+
+      - name: Run the SSH transport E2E
+        working-directory: src-tauri
+        env:
+          HELMOR_E2E_DOCKER: "1"
+          # Target the leg matching this runner's arch explicitly so
+          # the test doesn't have to infer it.
+          HELMOR_E2E_DOCKER_SERVICE: ${{ matrix.service }}
+          # Clear `RUSTC_WRAPPER` for this step — the runner image
+          # leaks `RUSTC_WRAPPER=sccache` into the env but doesn't
+          # actually have `sccache` on `$PATH`, so cargo blows up with
+          # `No such file or directory` before any test runs. Matches
+          # the local-dev workaround documented in CLAUDE.md.
+          RUSTC_WRAPPER: ""
+        run: cargo test --test remote_docker_e2e -- --nocapture --test-threads=1

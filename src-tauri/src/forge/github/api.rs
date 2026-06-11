@@ -25,12 +25,19 @@ pub(super) enum GraphqlOutcome<T> {
 }
 
 /// Run `gh api graphql -f query=… -f var=…` deserialised into `T`.
+///
+/// `runner` decides where the call lands: a workspace bound to a
+/// remote runtime gets its GraphQL traffic spoken from the container's
+/// `gh`; an unbound (or `local`-pinned) workspace keeps using the
+/// laptop's `gh` exactly like before. Callers pass `&ctx.runner` so
+/// the binding-aware choice happens once at the workspace boundary.
 pub(super) fn run_graphql<T: for<'de> Deserialize<'de>>(
+    runner: &crate::forge::command::ForgeRunner,
     login: &str,
     query: &str,
     variables: &[(&str, &str)],
 ) -> Result<GraphqlOutcome<T>> {
-    match run_graphql_command(login, query, variables)? {
+    match run_graphql_command(runner, login, query, variables)? {
         GraphqlOutcome::Auth => Ok(GraphqlOutcome::Auth),
         GraphqlOutcome::Ok(output) => {
             let parsed = serde_json::from_str::<T>(&output.stdout)
@@ -43,11 +50,12 @@ pub(super) fn run_graphql<T: for<'de> Deserialize<'de>>(
 /// Same as [`run_graphql`] but leaves the response as `serde_json::Value`
 /// for callers (mutation paths) that pluck individual fields out.
 pub(super) fn run_graphql_raw(
+    runner: &crate::forge::command::ForgeRunner,
     login: &str,
     query: &str,
     variables: &[(&str, &str)],
 ) -> Result<GraphqlOutcome<serde_json::Value>> {
-    match run_graphql_command(login, query, variables)? {
+    match run_graphql_command(runner, login, query, variables)? {
         GraphqlOutcome::Auth => Ok(GraphqlOutcome::Auth),
         GraphqlOutcome::Ok(output) => {
             let parsed = serde_json::from_str::<serde_json::Value>(&output.stdout)
@@ -58,6 +66,7 @@ pub(super) fn run_graphql_raw(
 }
 
 fn run_graphql_command(
+    runner: &crate::forge::command::ForgeRunner,
     login: &str,
     query: &str,
     variables: &[(&str, &str)],
@@ -76,20 +85,21 @@ fn run_graphql_command(
     }
 
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let output = match gh_accounts::run_cli_with_login(GITHUB_HOST, login, &arg_refs) {
-        Ok(output) => output,
-        Err(error) => {
-            // `gh auth token --user X` failing → that account is gone
-            // from the local credential store (user signed out from
-            // elsewhere). Surface as auth-needed so the inspector
-            // shows "Connect" instead of a generic error.
-            let message = format!("{error:#}");
-            if looks_like_auth_rejection(&message) {
-                return Ok(GraphqlOutcome::Auth);
+    let output =
+        match gh_accounts::run_cli_with_login_via_runner(runner, GITHUB_HOST, login, &arg_refs) {
+            Ok(output) => output,
+            Err(error) => {
+                // `gh auth token --user X` failing → that account is gone
+                // from the local credential store (user signed out from
+                // elsewhere). Surface as auth-needed so the inspector
+                // shows "Connect" instead of a generic error.
+                let message = format!("{error:#}");
+                if looks_like_auth_rejection(&message) {
+                    return Ok(GraphqlOutcome::Auth);
+                }
+                return Err(error.context("Failed to spawn `gh api graphql`"));
             }
-            return Err(error.context("Failed to spawn `gh api graphql`"));
-        }
-    };
+        };
 
     if output.success {
         return Ok(GraphqlOutcome::Ok(output));

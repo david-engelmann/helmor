@@ -14,8 +14,10 @@
 pub mod args;
 mod conductor;
 mod data;
+mod doctor;
 mod files;
 mod github;
+mod ipc_client;
 mod output;
 mod refs;
 mod repo;
@@ -141,6 +143,7 @@ fn dispatch(cli: &Cli) -> Result<()> {
         C::Data { action } => data::dispatch(action, cli),
         C::Completions { shell } => system::completions(*shell),
         C::CliStatus => system::cli_status(cli),
+        C::Doctor => doctor::run(cli),
         C::Quit => system::quit(),
         C::Settings { action } => settings::dispatch(action, cli),
         C::Repo { action } => repo::dispatch(action, cli),

@@ -1012,25 +1012,19 @@ pub async fn get_agent_login_status() -> CmdResult<AgentLoginStatus> {
     .await
 }
 
-/// Cursor "ready" = non-empty `app.cursor_provider.apiKey`.
+/// Cursor "ready" = has a non-empty API key in the platform vault
+/// (or, on non-vault hosts, the legacy SQLite field). Goes through
+/// the keychain wrapper so the lookup matches what the sidecar
+/// actually loads on spawn.
 fn cursor_login_ready() -> bool {
-    let raw = match crate::models::settings::load_setting_value("app.cursor_provider") {
-        Ok(Some(value)) => value,
-        Ok(None) => return false,
-        Err(error) => {
-            tracing::debug!("Failed to read app.cursor_provider: {error}");
-            return false;
+    match crate::keychain::read_cursor_api_key() {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(err) => {
+            tracing::debug!("Failed to read cursor api key for login probe: {err}");
+            false
         }
-    };
-    serde_json::from_str::<serde_json::Value>(&raw)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("apiKey")
-                .and_then(serde_json::Value::as_str)
-                .map(|key| !key.trim().is_empty())
-        })
-        .unwrap_or(false)
+    }
 }
 
 /// Resolve the binary to spawn for an agent CLI subcommand.
@@ -1578,7 +1572,7 @@ pub async fn request_quit(app: tauri::AppHandle, force: bool) {
 
     // 2. If tasks are in flight, gracefully stop every active stream.
     if force {
-        let sidecar = app.state::<sidecar::ManagedSidecar>();
+        let sidecar = app.state::<std::sync::Arc<sidecar::ManagedSidecar>>();
         let active = app.state::<agents::ActiveStreams>();
         agents::abort_all_active_streams_blocking(
             &sidecar,
@@ -1603,7 +1597,7 @@ pub async fn request_quit(app: tauri::AppHandle, force: bool) {
     }
 
     // 4. Cooperative sidecar teardown: shutdown RPC → SIGTERM → SIGKILL.
-    let sidecar = app.state::<sidecar::ManagedSidecar>();
+    let sidecar = app.state::<std::sync::Arc<sidecar::ManagedSidecar>>();
     let (cooperative, escalation) = if force {
         (
             std::time::Duration::from_millis(2000),
@@ -1644,7 +1638,7 @@ pub struct DevResetResult {
 pub async fn dev_reset_all_data(app: tauri::AppHandle) -> CmdResult<DevResetResult> {
     // 1. Stop all active agent streams so they don't write into deleted sessions.
     {
-        let sidecar_state = app.state::<sidecar::ManagedSidecar>();
+        let sidecar_state = app.state::<std::sync::Arc<sidecar::ManagedSidecar>>();
         let active = app.state::<agents::ActiveStreams>();
         agents::abort_all_active_streams_blocking(
             &sidecar_state,

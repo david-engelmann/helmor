@@ -39,7 +39,7 @@ fn can_replace_session_title(current_title: &str, title_seed: Option<&str>) -> b
 
 pub async fn generate_session_title(
     app: AppHandle,
-    sidecar: tauri::State<'_, crate::sidecar::ManagedSidecar>,
+    sidecar: tauri::State<'_, std::sync::Arc<crate::sidecar::ManagedSidecar>>,
     request: GenerateSessionTitleRequest,
 ) -> CmdResult<GenerateSessionTitleResponse> {
     let connection =
@@ -254,8 +254,10 @@ pub async fn generate_session_title(
                 let rid = request_id;
                 let session_id_for_logs = session_id_for_task;
                 move || {
-                    let sidecar_state: tauri::State<'_, crate::sidecar::ManagedSidecar> =
-                        app.state();
+                    let sidecar_state: tauri::State<
+                        '_,
+                        std::sync::Arc<crate::sidecar::ManagedSidecar>,
+                    > = app.state();
                     let mut title: Option<String> = None;
                     let mut branch_name: Option<String> = None;
 
@@ -560,7 +562,7 @@ pub struct SlashCommandsResponse {
 
 pub async fn list_slash_commands(
     app: AppHandle,
-    sidecar: tauri::State<'_, crate::sidecar::ManagedSidecar>,
+    sidecar: tauri::State<'_, std::sync::Arc<crate::sidecar::ManagedSidecar>>,
     cache: tauri::State<'_, super::slash_commands::SlashCommandCache>,
     request: ListSlashCommandsRequest,
 ) -> CmdResult<SlashCommandsResponse> {
@@ -1001,7 +1003,8 @@ fn spawn_background_refresh(
     std::thread::Builder::new()
         .name("slash-cmd-refresh".into())
         .spawn(move || {
-            let sidecar_state: tauri::State<'_, crate::sidecar::ManagedSidecar> = app.state();
+            let sidecar_state: tauri::State<'_, std::sync::Arc<crate::sidecar::ManagedSidecar>> =
+                app.state();
             let cache_state: tauri::State<'_, super::slash_commands::SlashCommandCache> =
                 app.state();
             let additional_directories = slash_command_scan_directories(&request);
@@ -1347,7 +1350,7 @@ mod tests {
     #[test]
     fn fallback_resolves_to_repo_root_path() {
         let dir = tempfile::tempdir().unwrap();
-        let _guard = crate::data_dir::TEST_ENV_LOCK.lock().unwrap();
+        let _guard = crate::data_dir::lock_test_env();
         std::env::set_var("HELMOR_DATA_DIR", dir.path());
 
         setup_test_db(dir.path());
@@ -1368,7 +1371,7 @@ mod tests {
     #[test]
     fn fallback_noop_when_repo_root_path_does_not_exist() {
         let dir = tempfile::tempdir().unwrap();
-        let _guard = crate::data_dir::TEST_ENV_LOCK.lock().unwrap();
+        let _guard = crate::data_dir::lock_test_env();
         std::env::set_var("HELMOR_DATA_DIR", dir.path());
 
         setup_test_db(dir.path());
@@ -1387,7 +1390,7 @@ mod tests {
     #[test]
     fn fallback_noop_when_repo_not_in_db() {
         let dir = tempfile::tempdir().unwrap();
-        let _guard = crate::data_dir::TEST_ENV_LOCK.lock().unwrap();
+        let _guard = crate::data_dir::lock_test_env();
         std::env::set_var("HELMOR_DATA_DIR", dir.path());
 
         setup_test_db(dir.path());

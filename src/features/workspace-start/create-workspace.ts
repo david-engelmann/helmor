@@ -30,6 +30,7 @@ export async function createWorkspaceFromStartComposer({
 	repoId,
 	sourceBranch,
 	mode,
+	runtimeName,
 	branchIntent,
 	submitMode,
 	editorStateSnapshot,
@@ -42,6 +43,12 @@ export async function createWorkspaceFromStartComposer({
 	/** Ignored in `chat` mode. */
 	sourceBranch: string;
 	mode: WorkspaceMode;
+	/**
+	 * Registered runtime to bind the new workspace to.
+	 * `null` (or omit) means "use the local runtime" — the backend
+	 * leaves `workspaces.runtime_name` NULL in that case.
+	 */
+	runtimeName?: string | null;
 	/** Defaults to `from_branch` when omitted. */
 	branchIntent?: WorkspaceBranchIntent;
 	submitMode: StartSubmitMode;
@@ -82,6 +89,7 @@ export async function createWorkspaceFromStartComposer({
 					mode,
 					branchIntent ?? null,
 					initialStatus,
+					runtimeName ?? null,
 					seedSessionId,
 				);
 

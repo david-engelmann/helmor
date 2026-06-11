@@ -48,8 +48,9 @@ pub use types::{
     ActionProvider, ActionStatusKind, ChangeRequestInfo, DetectionSignal, ForgeActionItem,
     ForgeActionStatus, ForgeDetection, ForgeLabels, ForgeProvider, RemoteState,
 };
-pub use workspace::{
-    close_workspace_change_request, get_workspace_forge, lookup_workspace_forge_action_status,
+pub use workspace::get_workspace_forge;
+pub(crate) use workspace::{
+    close_workspace_change_request, lookup_workspace_forge_action_status,
     lookup_workspace_forge_check_insert_text, merge_workspace_change_request,
     refresh_workspace_change_request,
 };

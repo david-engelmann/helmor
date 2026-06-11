@@ -153,6 +153,180 @@ fn kill_process(child_pid: u32) {
         .status();
 }
 
+/// Public escape hatch for the remote-runner seam. Runs the requested
+/// forge CLI on the LOCAL filesystem (i.e., this desktop process) and
+/// hands back its captured output in a wire-compatible shape so the
+/// `RemoteRuntime::forge_exec` trait method can dispatch through one
+/// uniform surface. The remote impl (`RemoteSshRuntime`) wires
+/// `forge.exec` through the JSON-RPC client instead; both paths
+/// agree on the return shape so callers don't care which runtime
+/// resolved the work.
+///
+/// `timeout_ms = None` keeps the existing `DEFAULT_COMMAND_TIMEOUT`
+/// behaviour — most internal callers don't override it.
+pub fn forge_run_local<I, S, K, V>(
+    program: &str,
+    args: I,
+    env: &[(K, V)],
+    timeout_ms: Option<u64>,
+) -> std::io::Result<ForgeLocalResult>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+    K: AsRef<OsStr>,
+    V: AsRef<OsStr>,
+{
+    let timeout = timeout_ms
+        .map(Duration::from_millis)
+        .unwrap_or(DEFAULT_COMMAND_TIMEOUT);
+    let output = run_command_full(program, args, timeout, env)?;
+    Ok(ForgeLocalResult {
+        stdout: output.stdout,
+        stderr: output.stderr,
+        exit_code: output.status,
+    })
+}
+
+/// Wire-compatible mirror of `super::remote::methods::ForgeExecResult`.
+/// Kept in this module (the local impl's home) so callers depending
+/// only on `crate::forge` don't have to reach into `remote::methods`.
+#[derive(Debug, Clone)]
+pub struct ForgeLocalResult {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+}
+
+/// Runtime-aware wrapper around the local `gh`/`glab` shell-outs. A
+/// workspace-scoped forge op resolves the workspace's bound runtime
+/// once at the call's entry point and threads this through the call
+/// chain — every downstream `gh api ...` invocation flows through
+/// `ForgeRunner::run_cli_with_login` (or `::run_cli`) and lands on
+/// the bound runtime instead of the laptop.
+///
+/// `None` keeps the legacy local-only behaviour for non-workspace
+/// surfaces (account listing, inbox enumeration, CLI auth status —
+/// laptop-level operations that depend on the desktop's own auth).
+#[derive(Clone, Default)]
+pub(crate) struct ForgeRunner {
+    runtime: Option<std::sync::Arc<dyn crate::remote::runtime::RemoteRuntime>>,
+}
+
+impl std::fmt::Debug for ForgeRunner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ForgeRunner")
+            .field(
+                "runtime",
+                &self.runtime.as_ref().map(|_| "<dyn RemoteRuntime>"),
+            )
+            .finish()
+    }
+}
+
+impl ForgeRunner {
+    /// Stay-local runner. Used by the existing forge surfaces (and
+    /// by tests / callers without a workspace context) — every
+    /// `gh`/`glab` call resolves through the laptop's vendored
+    /// binary.
+    pub(crate) fn local() -> Self {
+        Self::default()
+    }
+
+    /// Bind to a workspace's resolved runtime. When the runtime is
+    /// remote, every dispatched `gh`/`glab` call routes through
+    /// `forge.exec` so the container's authenticated CLI does the
+    /// work; the local-runtime case stays byte-for-byte equivalent
+    /// to `local()`.
+    pub(crate) fn with_runtime(
+        runtime: std::sync::Arc<dyn crate::remote::runtime::RemoteRuntime>,
+    ) -> Self {
+        Self {
+            runtime: Some(runtime),
+        }
+    }
+
+    /// `true` when this runner routes through the local
+    /// `forge::command` path (no bound runtime, or bound runtime is
+    /// `LocalRuntime`). Used by callers that need to decide whether
+    /// passing a host-side `GH_TOKEN` makes sense — the container's
+    /// `gh` has its OWN auth state, so we drop the laptop's token
+    /// when routing remote.
+    pub(crate) fn is_local(&self) -> bool {
+        match &self.runtime {
+            None => true,
+            Some(rt) => matches!(
+                rt.runtime_health().map(|h| h.kind),
+                Ok(crate::remote::runtime::RuntimeKind::Local),
+            ),
+        }
+    }
+
+    /// Dispatch a plain `gh`/`glab` invocation through the bound
+    /// runtime (remote-routed when set, local-fallback otherwise).
+    /// Each arg is sent verbatim; environment is empty.
+    pub(crate) fn run<I, S>(&self, program: &str, args: I) -> std::io::Result<CommandOutput>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.run_with_env::<_, _, &str, &str>(program, args, &[])
+    }
+
+    /// `Self::run` with caller-supplied environment overrides
+    /// (e.g. `GH_TOKEN` for the local path). On a remote runtime
+    /// the env is forwarded to the daemon — useful for picking a
+    /// specific authenticated identity on the *host*; the remote
+    /// daemon's `gh` typically ignores `GH_TOKEN` and uses its own
+    /// `gh auth` state, but we forward the env anyway so callers
+    /// don't have to branch on routing.
+    pub(crate) fn run_with_env<I, S, K, V>(
+        &self,
+        program: &str,
+        args: I,
+        env: &[(K, V)],
+    ) -> std::io::Result<CommandOutput>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+        K: AsRef<OsStr>,
+        V: AsRef<OsStr>,
+    {
+        let runtime = match &self.runtime {
+            Some(rt) => rt,
+            None => return run_command_with_env(program, args, env),
+        };
+        let args: Vec<String> = args
+            .into_iter()
+            .map(|a| a.as_ref().to_string_lossy().into_owned())
+            .collect();
+        let env: Vec<crate::remote::methods::ForgeExecEnv> = env
+            .iter()
+            .map(|(k, v)| crate::remote::methods::ForgeExecEnv {
+                name: k.as_ref().to_string_lossy().into_owned(),
+                value: v.as_ref().to_string_lossy().into_owned(),
+            })
+            .collect();
+        match runtime.forge_exec(crate::remote::methods::ForgeExecParams {
+            program: program.to_string(),
+            args,
+            env,
+            timeout_ms: None,
+        }) {
+            Ok(result) => Ok(CommandOutput {
+                stdout: result.stdout,
+                stderr: result.stderr,
+                success: matches!(result.exit_code, Some(0)),
+                status: result.exit_code,
+            }),
+            // The daemon-side handler returns its anyhow chain as a
+            // JSON-RPC error; surface it through io::Error so callers
+            // (which already have `.with_context` chains for the local
+            // path) keep their existing error-handling shape.
+            Err(err) => Err(std::io::Error::other(format!("forge.exec failed: {err:#}"))),
+        }
+    }
+}
+
 pub(crate) fn command_detail(output: &CommandOutput) -> String {
     let stderr = output.stderr.trim();
     if !stderr.is_empty() {

@@ -69,7 +69,13 @@ pub struct ForgeDetection {
     pub detection_signals: Vec<DetectionSignal>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+// Forge result types: derive Deserialize alongside Serialize so the
+// CLI can round-trip them across the desktop IPC. The CLI dispatches
+// PR ops over the `ui_sync` socket and the desktop replies with the
+// serialized typed payload; the CLI then deserializes back into the
+// same shape and prints. Pure data — no invariants to enforce on
+// parse.
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChangeRequestInfo {
     pub url: String,
@@ -79,7 +85,7 @@ pub struct ChangeRequestInfo {
     pub is_merged: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ActionStatusKind {
     Success,
@@ -88,7 +94,7 @@ pub enum ActionStatusKind {
     Failure,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ActionProvider {
     Github,
@@ -97,7 +103,7 @@ pub enum ActionProvider {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RemoteState {
     Ok,
@@ -107,7 +113,7 @@ pub enum RemoteState {
     Error,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ForgeActionItem {
     pub id: String,
@@ -118,7 +124,7 @@ pub struct ForgeActionItem {
     pub url: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ForgeActionStatus {
     pub change_request: Option<ChangeRequestInfo>,

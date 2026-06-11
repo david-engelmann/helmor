@@ -113,6 +113,13 @@ export type WorkspaceRow = {
 	kind?: string;
 	/** True for an ai_triage row still awaiting the user's first send. */
 	triagePrimingUnconsumed?: boolean;
+	/**
+	 * Registered runtime this workspace is bound to. `null` and `"local"`
+	 * mean "use the local runtime" — the sidebar renders no chip in
+	 * those cases. Anything else surfaces a small `cmd:<name>` chip
+	 * inline with the workspace title.
+	 */
+	runtimeName?: string | null;
 };
 
 export type WorkspaceGroup = {
@@ -226,6 +233,12 @@ export type WorkspaceSummary = {
 	createdAt: string;
 	updatedAt?: string;
 	lastUserMessageAt?: string | null;
+	/**
+	 * Registered runtime this workspace is bound to. `null` and `"local"`
+	 * mean "use the local runtime" (the backend treats them identically).
+	 * Anything else names a remote and the sidebar renders a host chip.
+	 */
+	runtimeName?: string | null;
 };
 
 export type BranchPrefixType = "username" | "custom" | "none";
@@ -346,6 +359,13 @@ export type WorkspaceDetail = {
 	/** gh/glab account login bound to the parent repo. NULL means no
 	 * account is bound — UI shows the "Connect" prompt. */
 	forgeLogin?: string | null;
+	/**
+	 * Registered runtime this workspace is bound to. `null` and `"local"`
+	 * mean "use the local runtime"; anything else names a remote and the
+	 * workspace header surfaces a chip with that name. Drives the same
+	 * resolution rule the dispatcher uses in `resolve_runtime_for_call`.
+	 */
+	runtimeName?: string | null;
 	/** Set when this workspace's setup script last finished with exit
 	 * code 0. NULL means never run (or skipped because the repo had no
 	 * setup script). Drives the inspector's Setup tab "ran in another
@@ -715,6 +735,1143 @@ export async function loadDataInfo(): Promise<DataInfo | null> {
 	} catch {
 		return null;
 	}
+}
+
+export type RuntimeKind = { type: "local" } | { type: "remote"; host: string };
+
+export type RuntimeHealth = {
+	kind: RuntimeKind;
+	hostname: string;
+	version: string;
+};
+
+export async function getRuntimeHealth(
+	runtimeName?: string,
+): Promise<RuntimeHealth> {
+	return invoke<RuntimeHealth>("get_runtime_health", { runtimeName });
+}
+
+/// RPC pipe telemetry surfaced to the desktop's Connection
+/// diagnostics panel. Mirrors the Rust `RpcClientDiagnostics`.
+/// `None` for the local runtime (no wire to instrument).
+export type RpcClientDiagnostics = {
+	peerLabel: string;
+	serverVersion: string;
+	serverHostname: string;
+	protocolVersion: string;
+	connectedAtMs: number;
+	closedReason?: string | null;
+	requestsSent: number;
+	responsesReceived: number;
+	notificationsReceived: number;
+	decodeErrors: number;
+};
+
+/// Aggregated connection diagnostics for one runtime. Bundles the
+/// registry's state, the server's health probe, the RPC pipe's
+/// telemetry, the daemon's agent.list count, and a freshly-measured
+/// ping RTT. Per-probe failures collapse into `lastError` so a
+/// single bad signal doesn't blank the rest of the panel.
+export type RuntimeDiagnostics = {
+	name: string;
+	state: RuntimeState;
+	health?: RuntimeHealth | null;
+	client?: RpcClientDiagnostics | null;
+	agentSessionCount?: number | null;
+	lastPingMs?: number | null;
+	lastError?: string | null;
+};
+
+export async function getRemoteRuntimeDiagnostics(
+	name: string,
+): Promise<RuntimeDiagnostics> {
+	return invoke<RuntimeDiagnostics>("get_remote_runtime_diagnostics", { name });
+}
+
+// ── remote port forwarding ─────────────────────────────────────────
+
+/**
+ * One active SSH port forward. The daemon-side OpenSSH master
+ * relays `127.0.0.1:localPort` on the desktop to
+ * `127.0.0.1:remotePort` on the remote — same shape VS Code
+ * Remote-SSH uses for its auto-forwarded ports.
+ */
+export type PortForwardEntry = {
+	runtimeName: string;
+	localPort: number;
+	remotePort: number;
+	/**
+	 * Optional human label — "Vite", "Rails", "Jupyter".
+	 * Surfaces in the panel row so multiple forwards on the
+	 * same runtime stay distinguishable.
+	 */
+	label?: string | null;
+	/**
+	 * Unix epoch ms when the forward started. Reset on every
+	 * boot-time restore so the panel's "started Xs ago" chip
+	 * reflects the current session, not the persisted entry.
+	 */
+	startedAtMs: number;
+};
+
+export type StopPortForwardResult = {
+	/**
+	 * `true` when an entry was actively forwarded and got
+	 * dropped; `false` when no entry matched (the panel ignores
+	 * this; the frontend treats it as success either way).
+	 */
+	stopped: boolean;
+};
+
+/**
+ * Start a TCP port forward from the desktop's
+ * `127.0.0.1:localPort` to the remote's `127.0.0.1:remotePort`.
+ *
+ * Only works against SSH-shaped runtimes — Command transports
+ * (Teleport, Tailscale SSH, kubectl exec) surface an error
+ * pointing the operator at the wrapper's own forwarding tool.
+ */
+export async function startRemotePortForward(args: {
+	runtimeName: string;
+	localPort: number;
+	remotePort: number;
+	label?: string;
+}): Promise<PortForwardEntry> {
+	return invoke<PortForwardEntry>("start_remote_port_forward", {
+		runtimeName: args.runtimeName,
+		localPort: args.localPort,
+		remotePort: args.remotePort,
+		label: args.label ?? null,
+	});
+}
+
+/**
+ * Stop a previously-started forward. Idempotent — stopping an
+ * unknown `(runtime, localPort)` returns `stopped=false` rather
+ * than erroring.
+ */
+export async function stopRemotePortForward(args: {
+	runtimeName: string;
+	localPort: number;
+}): Promise<StopPortForwardResult> {
+	return invoke<StopPortForwardResult>("stop_remote_port_forward", {
+		runtimeName: args.runtimeName,
+		localPort: args.localPort,
+	});
+}
+
+/**
+ * Snapshot every active forward, or just those for one runtime
+ * when `runtimeName` is supplied. The panel uses the per-runtime
+ * variant; an operator-facing "all forwards" surface can use
+ * the no-arg variant later.
+ */
+export async function listRemotePortForwards(
+	runtimeName?: string,
+): Promise<PortForwardEntry[]> {
+	return invoke<PortForwardEntry[]>("list_remote_port_forwards", {
+		runtimeName: runtimeName ?? null,
+	});
+}
+
+export type WorkspaceStatusResult = {
+	isClean: boolean;
+	changedPaths: string[];
+};
+
+/**
+ * Resolution order on the backend:
+ *   1. `runtimeName` — explicit override; ignored if empty/undefined.
+ *   2. `workspaceId` — look up the persisted binding for that
+ *      workspace; falls back to local if no binding or if the
+ *      bound runtime isn't currently registered.
+ *   3. Neither → local.
+ */
+export async function getWorkspaceStatus(
+	workspaceDir: string,
+	options: { workspaceId?: string; runtimeName?: string } = {},
+): Promise<WorkspaceStatusResult> {
+	return invoke<WorkspaceStatusResult>("get_workspace_status", {
+		workspaceDir,
+		workspaceId: options.workspaceId,
+		runtimeName: options.runtimeName,
+	});
+}
+
+/**
+ * "Where am I?" projection — current branch, head commit, upstream
+ * tracking ref. Same resolver as `getWorkspaceStatus` (binding /
+ * explicit override / local fallback).
+ */
+export type WorkspaceBranchInfoResult = {
+	currentBranch: string;
+	headCommit: string;
+	upstreamRef?: string;
+};
+
+export async function getWorkspaceBranchInfo(
+	workspaceDir: string,
+	options: { workspaceId?: string; runtimeName?: string } = {},
+): Promise<WorkspaceBranchInfoResult> {
+	return invoke<WorkspaceBranchInfoResult>("get_workspace_branch_info", {
+		workspaceDir,
+		workspaceId: options.workspaceId,
+		runtimeName: options.runtimeName,
+	});
+}
+
+export type RuntimeState =
+	| { type: "connected" }
+	| { type: "degraded"; reason: string }
+	| { type: "disconnected"; reason: string };
+
+export type RuntimeConnectionConfig =
+	| { type: "local"; binaryPath?: string }
+	| { type: "ssh"; host: string; remoteBinary: string }
+	/**
+	 * Custom transport (Teleport, Tailscale SSH, kubectl exec, etc.).
+	 * `argv` is the literal token list — no shell tokenisation happens
+	 * anywhere along the wire, so spaces / quotes / special chars inside
+	 * a single token survive intact.
+	 */
+	| { type: "command"; argv: string[] };
+
+export type RuntimeEntry = {
+	name: string;
+	isLocal: boolean;
+	state: RuntimeState;
+	/**
+	 * Connection config the entry was last registered with, if any.
+	 * `undefined` for the built-in local runtime and for entries
+	 * registered without a persisted config (tests, ad-hoc tools).
+	 */
+	config?: RuntimeConnectionConfig;
+};
+
+export async function listRemoteRuntimes(): Promise<RuntimeEntry[]> {
+	return invoke<RuntimeEntry[]>("list_remote_runtimes");
+}
+
+/**
+ * Surface host aliases the user named in `~/.ssh/config` so the SSH
+ * connect form can offer type-ahead suggestions. Missing or
+ * unreadable config → empty array (treated as "no suggestions").
+ */
+export async function listSshHosts(): Promise<string[]> {
+	return invoke<string[]>("list_ssh_hosts");
+}
+
+/**
+ * Track B3: an identity key file the desktop can see in
+ * `$HOME/.ssh/`. Surfaced in the Add-Server wizard so the operator
+ * can confirm ssh has keys to offer.
+ */
+export type SshIdentity = {
+	name: string;
+	publicKeyPath: string;
+	hasPrivateKey: boolean;
+};
+
+export async function listSshIdentities(): Promise<SshIdentity[]> {
+	return invoke<SshIdentity[]>("list_ssh_identities");
+}
+
+/**
+ * Track B4: SSH agent reachability snapshot. The frontend renders
+ * one of three chips based on `state`:
+ * - `available` — agent answered; `keysLoaded` may be 0.
+ * - `notConfigured` — `SSH_AUTH_SOCK` unset (most often a
+ *   Finder-launched desktop without a shell-exported agent).
+ * - `stale` — socket set but unreachable; agent likely killed.
+ */
+export type SshAgentStatus =
+	| { state: "available"; socketPath: string; keysLoaded: number }
+	| { state: "notConfigured" }
+	| { state: "stale"; socketPath: string; reason: string };
+
+export async function getSshAgentStatus(): Promise<SshAgentStatus> {
+	return invoke<SshAgentStatus>("ssh_agent_status");
+}
+
+/**
+ * Track B3: pre-flight `ssh <host> true` probe outcome. The
+ * Add-Server wizard runs this before kicking off the full
+ * `connect_remote_runtime` path so the user gets an actionable
+ * error in ~1 second instead of a confusing scp failure ten
+ * seconds in.
+ *
+ * - `reachable` — ssh dialed + authenticated. Carries the
+ *   wall-clock latency; the wizard surfaces it as a tooltip.
+ * - `authFailed` — ssh dialed but auth was rejected; the wizard
+ *   tells the operator to load a key into the agent or update
+ *   `~/.ssh/config`.
+ * - `unreachable` — DNS / TCP / route-level failure. Distinct
+ *   so the UI suggests checking hostname / network rather than
+ *   keys.
+ * - `timeout` — wall-clock budget exhausted. Almost always a
+ *   firewall or slow VPN.
+ */
+export type SshHostProbe =
+	| { state: "reachable"; latencyMs: number }
+	| { state: "authFailed"; stderr: string }
+	| { state: "unreachable"; stderr: string }
+	| { state: "timeout" };
+
+export async function probeSshHost(host: string): Promise<SshHostProbe> {
+	return invoke<SshHostProbe>("probe_ssh_host", { host });
+}
+
+/**
+ * Track B2: per-host attribute snapshot from `~/.ssh/config`. Lets
+ * the wizard render "this alias actually resolves to host X, logs
+ * in as Y, jumps via Z" before the operator clicks Connect.
+ */
+export type SshHostDetail = {
+	alias: string;
+	hostName: string | null;
+	user: string | null;
+	identityFiles: string[];
+	proxyJump: string | null;
+};
+
+export async function listSshHostDetails(): Promise<SshHostDetail[]> {
+	return invoke<SshHostDetail[]>("list_ssh_host_details");
+}
+
+/**
+ * One persisted "this workspace routes through that runtime" pin.
+ * `runtimeName` is a string key into the runtime registry (not a
+ * validated reference) — a binding can outlive its target runtime
+ * and reattach when the same name reconnects.
+ */
+export type WorkspaceRuntimeBinding = {
+	workspaceId: string;
+	runtimeName: string;
+	/**
+	 * Track F2: optional per-host worktree path override. `null` /
+	 * `undefined` means "the same path as locally" (works when both
+	 * sides happen to share a filesystem layout). Set when the
+	 * remote keeps the project at a different absolute path so the
+	 * resolver doesn't ship local paths into a remote `git` /
+	 * `agent` op.
+	 */
+	remotePath?: string | null;
+};
+
+export async function listWorkspaceRuntimeBindings(): Promise<
+	WorkspaceRuntimeBinding[]
+> {
+	return invoke<WorkspaceRuntimeBinding[]>("list_workspace_runtime_bindings");
+}
+
+/**
+ * Pin a workspace to a runtime by name. Overwrites any prior
+ * binding for the same workspace. Empty inputs are rejected.
+ *
+ * Track F2: pass `remotePath` to override the worktree path on the
+ * bound runtime (typical when local + remote have different
+ * filesystem layouts). Omit / pass `null` for the default "same
+ * path on both sides" behaviour.
+ */
+export async function setWorkspaceRuntimeBinding(
+	workspaceId: string,
+	runtimeName: string,
+	remotePath?: string | null,
+): Promise<void> {
+	return invoke<void>("set_workspace_runtime_binding", {
+		workspaceId,
+		runtimeName,
+		// Tauri serialises `undefined` as missing; pass through both
+		// so older backends that don't accept the arg keep working.
+		remotePath: remotePath ?? null,
+	});
+}
+
+/**
+ * Remove a workspace's binding. Idempotent — clearing an unbound
+ * workspace is a no-op.
+ */
+export async function clearWorkspaceRuntimeBinding(
+	workspaceId: string,
+): Promise<void> {
+	return invoke<void>("clear_workspace_runtime_binding", { workspaceId });
+}
+
+/**
+ * Track F2.1: look up the last `remotePath` the operator typed for
+ * a given `(workspaceId, runtimeName)` pair. Returns `null` for
+ * pairs the user has never confirmed with a non-empty path.
+ *
+ * Independent of which runtime is currently active for the
+ * workspace — useful for pre-filling the move-workspace dialog
+ * when the operator re-binds back to a host they had a path on
+ * before.
+ */
+export async function getRememberedWorkspaceRemotePath(
+	workspaceId: string,
+	runtimeName: string,
+): Promise<string | null> {
+	return invoke<string | null>("get_remembered_workspace_remote_path", {
+		workspaceId,
+		runtimeName,
+	});
+}
+
+/**
+ * Track F3 bundle orchestrator: clone a workspace from its current
+ * runtime to a new one over the JSON-RPC channel and flip the
+ * binding on success.
+ *
+ * The desktop calls `workspace.bundle` on the source runtime → ships
+ * the base64 bytes through itself → calls `workspace.unbundle` on
+ * the destination. The bundle is capped at 10 MiB pre-base64; larger
+ * repos surface a clean error rather than a codec failure.
+ *
+ * `sourceWorkspaceDir` is the workspace's path AS THE DESKTOP SEES
+ * IT (i.e. the local checkout path). The orchestrator translates
+ * to the source runtime's actual path via the binding's
+ * `remote_path` override when one exists.
+ */
+export type CloneWorkspaceResult = {
+	cloned: boolean;
+	headBranch: string;
+	remotePath: string;
+};
+
+export async function cloneWorkspaceToRuntime(
+	workspaceId: string,
+	sourceWorkspaceDir: string,
+	destinationRuntime: string,
+	destinationPath: string,
+): Promise<CloneWorkspaceResult> {
+	return invoke<CloneWorkspaceResult>("clone_workspace_to_runtime", {
+		workspaceId,
+		sourceWorkspaceDir,
+		destinationRuntime,
+		destinationPath,
+	});
+}
+
+export async function connectRemoteRuntime(
+	name: string,
+	host: string,
+	remoteBinary: string,
+	options?: { forwardAgent?: boolean },
+): Promise<RuntimeHealth> {
+	return invoke<RuntimeHealth>("connect_remote_runtime", {
+		name,
+		host,
+		remoteBinary,
+		// Track G3: omit when undefined so older daemons / mocks that
+		// don't see the param treat it as `false`. Tauri serialises
+		// `undefined` as missing, so this stays backward compatible.
+		forwardAgent: options?.forwardAgent,
+	});
+}
+
+/**
+ * Connect via a custom transport (Teleport, Tailscale SSH,
+ * `kubectl exec`, etc.). `argv` is the literal token list — no shell
+ * tokenisation, so embedded whitespace inside a single token survives
+ * intact. The argv must invoke `helmor-server --proxy` (or equivalent)
+ * on the remote side; auto-install is out of scope for this transport.
+ */
+export async function connectCommandRuntime(
+	name: string,
+	argv: string[],
+): Promise<RuntimeHealth> {
+	return invoke<RuntimeHealth>("connect_command_runtime", { name, argv });
+}
+
+/**
+ * Spawn the bundled `helmor-server` binary as a local child process —
+ * smoke-test affordance for dev builds. Skips SSH; reaches the same
+ * RPC dispatcher the production path uses.
+ *
+ * `binaryPath` is optional: omit to fall back to `$HELMOR_SERVER_PATH`
+ * or the binary next to the running app.
+ */
+export async function connectLocalRuntime(
+	name: string,
+	binaryPath?: string,
+): Promise<RuntimeHealth> {
+	return invoke<RuntimeHealth>("connect_local_runtime", { name, binaryPath });
+}
+
+export async function disconnectRemoteRuntime(name: string): Promise<void> {
+	return invoke<void>("disconnect_remote_runtime", { name });
+}
+
+/**
+ * Re-establish a connection using the entry's previously-persisted
+ * config. Used to recover from a Disconnected state (typically a
+ * tombstone from boot-time restore failure).
+ */
+/**
+ * Force re-install the helmor-server binary on a remote + reconnect.
+ * Used by the version-drift banner's "Reinstall" action when the
+ * remote's daemon version is older than the desktop's and the
+ * operator wants to refresh it without dropping back to the
+ * standalone installer.
+ *
+ * Only valid for SSH-backed remotes — local + command-transport
+ * runtimes bail with a legible error.
+ */
+export async function reinstallRemoteDaemon(
+	name: string,
+): Promise<RuntimeHealth> {
+	return invoke<RuntimeHealth>("reinstall_remote_daemon", { name });
+}
+
+/**
+ * Install (or update) the agent-runtime bundle on a connected SSH
+ * runtime. Idempotent: a current install is a sub-second no-op (the
+ * manifest matches → empty plan → early return). On a fresh host the
+ * full bundle (sidecar + claude + wrapper, ~330 MB) goes via a single
+ * sha256-verified tar-pipe through SSH with hardware-accelerated AES-
+ * GCM and lands in ~5 s on a fast LAN.
+ *
+ * Already called automatically by `connect_remote_runtime` on first
+ * connect; the manual entry point exists so the Remote Servers panel
+ * can offer a "Reinstall bundle" affordance, and so headless probes
+ * (e2e tests, recording tools) can trigger it deterministically.
+ *
+ * The install emits `RemoteBundleInstall{Progress,Complete,Failed}`
+ * UI mutation events the panel subscribes to via
+ * [`useBundleStatus`](../features/settings/panels/use-bundle-status.ts).
+ */
+export type InstallRemoteBundleResult = {
+	manifest: BundleManifest;
+	installedFiles: string[];
+	alreadyCurrent: boolean;
+};
+
+export type BundleManifest = {
+	schemaVersion: number;
+	target: "linux-arm64" | "linux-x64";
+	stagedAt: string;
+	claudeCodeVersion: string;
+	files: Array<{ path: string; sha256: string; bytes: number }>;
+};
+
+export async function installRemoteBundle(
+	name: string,
+): Promise<InstallRemoteBundleResult> {
+	return invoke<InstallRemoteBundleResult>("install_remote_bundle", { name });
+}
+
+export async function reconnectRemoteRuntime(
+	name: string,
+): Promise<RuntimeHealth> {
+	return invoke<RuntimeHealth>("reconnect_remote_runtime", { name });
+}
+
+/**
+ * Push an SDK API key (or clear it) into a remote
+ * runtime's secrets store. The daemon persists to
+ * `$HOME/.helmor/server/secrets.json` (mode 0600) and hot-pushes
+ * to the live sidecar via `updateConfig` — keys NEVER persist on
+ * the desktop side. Pass `apiKey: null` to clear.
+ *
+ * `provider` is the SDK identifier the sidecar uses internally
+ * (`"cursor"` today; future providers reuse the same RPC).
+ */
+export async function setRuntimeAgentAuth(
+	name: string,
+	provider: string,
+	apiKey: string | null,
+	baseUrl?: string | null,
+): Promise<void> {
+	return invoke<void>("set_runtime_agent_auth", {
+		name,
+		provider,
+		apiKey,
+		baseUrl: baseUrl ?? null,
+	});
+}
+
+/**
+ * Track G2 read side: snapshot which providers have a key configured
+ * on the named remote runtime's daemon. Returns presence + optional
+ * base URLs only — the literal API key never crosses the wire. Used
+ * by RuntimeAuthDialog ("Currently configured: cursor") and the
+ * Remote Servers panel (key-icon chip per row).
+ */
+export type ProviderAuthStatus = {
+	provider: string;
+	configured: boolean;
+	baseUrl?: string | null;
+};
+
+export type RuntimeAuthStatus = {
+	providers: ProviderAuthStatus[];
+};
+
+export async function getRemoteRuntimeAuthStatus(
+	name: string,
+): Promise<RuntimeAuthStatus> {
+	return invoke<RuntimeAuthStatus>("get_remote_runtime_auth_status", {
+		name,
+	});
+}
+
+// ── workspace file watcher ─────────────────────────────────────────
+
+export type WorkspaceFileWatchKind = "local" | "remote";
+
+export type StartWorkspaceWatchResult = {
+	workspaceId: string;
+	/**
+	 * `"local"` when the watcher runs in this desktop process,
+	 * `"remote"` when it runs on the bound `helmor-server` daemon.
+	 * Drives the runtime-chip rendering on the watcher status UI.
+	 */
+	kind: WorkspaceFileWatchKind;
+};
+
+export type StopWorkspaceWatchResult = {
+	/** `false` when no watcher was active for the workspace id. */
+	stopped: boolean;
+};
+
+/**
+ * Start watching `workspace_dir` for file changes and invalidate
+ * the workspace's `workspaceChanges` / `workspaceFileTree` /
+ * `workspaceGitActionStatus` React Query keys on every debounced
+ * batch. Re-starting on an already-watched workspace replaces the
+ * old watcher rather than erroring, so a workspace-open hook can
+ * call this unconditionally on mount.
+ *
+ * `runtimeName=null` or `"local"` runs an in-process FileWatcher.
+ * Any other name resolves through the runtime registry and
+ * dispatches `workspace.startWatch` over the wire.
+ */
+export async function startWorkspaceWatch(args: {
+	workspaceId: string;
+	workspaceDir: string;
+	runtimeName?: string | null;
+}): Promise<StartWorkspaceWatchResult> {
+	return invoke<StartWorkspaceWatchResult>("start_workspace_watch", {
+		workspaceId: args.workspaceId,
+		workspaceDir: args.workspaceDir,
+		runtimeName: args.runtimeName ?? null,
+	});
+}
+
+/**
+ * Stop the watcher for `workspace_id`. Returns `stopped=false`
+ * when no watcher was registered — typical when a workspace
+ * unmounts before its watcher fully spun up; the desktop hook
+ * just logs and moves on.
+ */
+export async function stopWorkspaceWatch(
+	workspaceId: string,
+): Promise<StopWorkspaceWatchResult> {
+	return invoke<StopWorkspaceWatchResult>("stop_workspace_watch", {
+		workspaceId,
+	});
+}
+
+// ── workspace search ───────────────────────────────────────────────
+
+/**
+ * One match returned by `workspace.search`. `lineNumber` is
+ * 1-indexed (git grep convention); `line` is the matched line's
+ * text trimmed of trailing newline but with leading whitespace
+ * preserved.
+ */
+export type WorkspaceSearchMatch = {
+	relativePath: string;
+	lineNumber: number;
+	line: string;
+};
+
+export type WorkspaceSearchResult = {
+	matches: WorkspaceSearchMatch[];
+	/** `true` when the server hit `maxResults` and stopped emitting. */
+	truncated: boolean;
+};
+
+/**
+ * Run a workspace-wide text search. Backed by `git grep` on the
+ * runtime's side (local or remote) so gitignore + binary-file
+ * skipping come for free. Honours the workspace's resolved runtime
+ * binding when `workspaceId` is supplied; `runtimeName` overrides
+ * if both are set.
+ *
+ * `query` is a regex unless `fixedString` is `true`. The server
+ * clamps `maxResults` to a hard cap so a runaway request can't
+ * exhaust memory; if `maxResults` is omitted the server picks a
+ * conservative default (200 today).
+ */
+export async function searchWorkspace(args: {
+	workspaceDir: string;
+	query: string;
+	maxResults?: number;
+	caseInsensitive?: boolean;
+	fixedString?: boolean;
+	workspaceId?: string;
+	runtimeName?: string;
+}): Promise<WorkspaceSearchResult> {
+	return invoke<WorkspaceSearchResult>("search_workspace", {
+		workspaceDir: args.workspaceDir,
+		query: args.query,
+		maxResults: args.maxResults ?? null,
+		caseInsensitive: args.caseInsensitive ?? false,
+		fixedString: args.fixedString ?? false,
+		workspaceId: args.workspaceId ?? null,
+		runtimeName: args.runtimeName ?? null,
+	});
+}
+
+// ── remote agent sessions (reattach UX) ────────────────────────────
+
+/**
+ * One row from `agent.list` on a connected remote runtime. Mirrors
+ * `AgentSessionEntry` in the Rust backend; populated lazily by the
+ * daemon as the sidecar emits `system.init` (so `provider` and
+ * `workspaceDir` may be `null` for a freshly-accepted send that
+ * hasn't yet seen the first event).
+ */
+/**
+ * Lifecycle phase of the session. `live` = sidecar
+ * process still running; `endedReplayOnly` = the on-disk journal
+ * survives but the sidecar is gone (daemon restart, terminal
+ * event already fired, etc.). Auto-reattach skips
+ * `endedReplayOnly` rows — only explicit operator action
+ * (e.g. the dev panel) should attach to one.
+ */
+export type AgentSessionState = "live" | "endedReplayOnly";
+
+export type RemoteAgentSession = {
+	requestId: string;
+	helmorSessionId: string | null;
+	provider: string | null;
+	workspaceDir: string | null;
+	startedAtMs: number;
+	lastEventMs: number;
+	/**
+	 * Defaults to `"live"` for pre-24t daemons that don't emit the
+	 * field — the desktop's `serde(default)` mirror keeps the older
+	 * wire shape backward-compatible.
+	 */
+	state: AgentSessionState;
+};
+
+/**
+ * Snapshot the daemon's active agent sessions on a connected remote
+ * runtime. Drives the reattach UX (visibility into orphaned remote
+ * turns + manual abort affordance).
+ *
+ * Refuses the built-in `"local"` runtime — there's no daemon-side
+ * agent.list to call; local in-flight turns are tracked through
+ * `ActiveStreams` instead.
+ */
+export async function listRemoteAgentSessions(
+	name: string,
+): Promise<RemoteAgentSession[]> {
+	return invoke<RemoteAgentSession[]>("list_remote_agent_sessions", { name });
+}
+
+/**
+ * Result of {@link tailRemoteDaemonLog}.
+ *
+ * Track E1: surface the remote daemon's trailing log lines so an
+ * operator can diagnose without an SSH terminal. Mirrors the
+ * `DaemonTailLogResult` Rust struct field-for-field.
+ */
+export type DaemonTailLogResult = {
+	/** Path the daemon read from (e.g. `$HOME/.helmor/server/daemon.log`). */
+	logPath: string;
+	/** Trailing lines, oldest first. Newlines stripped. */
+	lines: string[];
+	/** `true` when the file has more content than was returned. */
+	truncated: boolean;
+};
+
+/**
+ * Read up to `maxLines` (capped at 1000 server-side) trailing log
+ * lines from the remote daemon. The local runtime errors — there's
+ * no remote daemon log to read.
+ */
+export async function tailRemoteDaemonLog(
+	name: string,
+	maxLines: number,
+): Promise<DaemonTailLogResult> {
+	return invoke<DaemonTailLogResult>("tail_remote_daemon_log", {
+		name,
+		maxLines,
+	});
+}
+
+/**
+ * Per-method RPC metric (Track E2). One entry per method recorded
+ * since daemon startup.
+ */
+export type MethodMetricsSnapshot = {
+	method: string;
+	count: number;
+	errorCount: number;
+	p50Ms: number;
+	p99Ms: number;
+	lastSampleMs?: number | null;
+};
+
+/**
+ * Result of {@link getRemoteRuntimeMetrics}. Carries the per-method
+ * RPC counters/latency (Track E2) + recent daemon startup timestamps
+ * (Track E4) so the desktop can show "crashed N times in 5 min"
+ * warnings.
+ */
+export type RuntimeMetricsResult = {
+	methods: MethodMetricsSnapshot[];
+	uptimeSecs: number;
+	recentStartsMs: number[];
+};
+
+/**
+ * Track E2 + E4: snapshot the remote daemon's RPC metrics + recent
+ * restart history.
+ */
+export async function getRemoteRuntimeMetrics(
+	name: string,
+): Promise<RuntimeMetricsResult> {
+	return invoke<RuntimeMetricsResult>("get_remote_runtime_metrics", { name });
+}
+
+/**
+ * Abort an in-flight remote agent session by request id. The remote
+ * sidecar emits a terminating `aborted` event that the daemon
+ * broadcasts to any attached client; if no client is attached the
+ * event is dropped (and the session removed) by the daemon's
+ * per-session map.
+ */
+export async function abortRemoteAgentSession(
+	name: string,
+	requestId: string,
+): Promise<void> {
+	return invoke<void>("abort_remote_agent_session", { name, requestId });
+}
+
+/**
+ * Result of {@link attachRemoteAgentSession}. The struct return
+ * (vs. a bare `boolean`) lets the frontend stash the daemon's
+ * `lastSeq` for a future reattach + render the `replayGap` warning
+ * when the journal's ring evicted entries the desktop hadn't
+ * persisted yet.
+ */
+export type AttachRemoteAgentSessionResult = {
+	/** Mirrors the original `boolean` return contract. */
+	found: boolean;
+	/**
+	 * Daemon's high-water-mark seq for this session. Frontend
+	 * stashes it; future reattaches don't need to consult the
+	 * local DB to set `helmorSessionId`. `0` when `found=false`
+	 * or the journal is empty.
+	 */
+	lastSeq: number;
+	/** Number of journal entries the daemon flushed on this attach. */
+	replayedCount: number;
+	/**
+	 * Earliest seq still in the daemon's ring when the caller's
+	 * `since_seq` was older. `null`/undefined means a clean replay;
+	 * a value means some events were evicted before this attach
+	 * (the frontend should fall back to a full DB reload for the
+	 * gap).
+	 */
+	replayGap?: number | null;
+};
+
+/**
+ * Reattach the desktop's notification subscriber to an existing
+ * remote agent session. Returns `{found:true}` when the daemon
+ * swapped the per-session notifier; `{found:false}` when the
+ * session expired or never existed on the daemon (the desktop
+ * should drop any tentative local subscription).
+ *
+ * Pass `helmorSessionId` so the backend can compute `since_seq`
+ * from the local DB's `MAX(last_event_seq)` for this session — the
+ * daemon replays only journal entries newer than the desktop has
+ * already persisted. Omit it for cold-attach diagnostics on
+ * sessions the desktop doesn't track locally.
+ */
+export async function attachRemoteAgentSession(
+	name: string,
+	requestId: string,
+	helmorSessionId?: string,
+): Promise<AttachRemoteAgentSessionResult> {
+	return invoke<AttachRemoteAgentSessionResult>("attach_remote_agent_session", {
+		name,
+		requestId,
+		helmorSessionId: helmorSessionId ?? null,
+	});
+}
+
+/**
+ * One agent event delivered through a reattach stream. Mirrors the
+ * Rust `ReattachedAgentEvent`: the `requestId` echo + the raw
+ * sidecar event JSON.
+ */
+export type ReattachedAgentEvent = {
+	requestId: string;
+	event: unknown;
+};
+
+export type ReattachAgentStreamResult = {
+	/**
+	 * `true` when the daemon found the session and is now streaming
+	 * its events through the supplied Channel. `false` means the
+	 * session expired between the user's click and our attach RPC;
+	 * the Channel is inert and the frontend should hide the
+	 * reattach affordance.
+	 */
+	found: boolean;
+	/**
+	 * Daemon's high-water-mark seq for this session.
+	 * Stash this so a subsequent reattach can pass it back as
+	 * `since_seq` without a DB round-trip. `0` when `found=false`.
+	 */
+	lastSeq: number;
+	/** Number of journal entries the daemon flushed on attach. */
+	replayedCount: number;
+	/**
+	 * Earliest seq the daemon's ring can still deliver when the
+	 * caller's `since_seq` predates the oldest entry. `null`/undef
+	 * means the replay was complete; a value means the desktop
+	 * missed events and should fall back to a full DB reload for
+	 * the gap.
+	 */
+	replayGap?: number | null;
+};
+
+export type ReleaseAgentStreamResult = {
+	/**
+	 * `true` when a stream was actively running for the request id
+	 * and got dropped. `false` when nothing was registered — the
+	 * frontend can use this to detect a stale request id after a
+	 * reload race.
+	 */
+	released: boolean;
+};
+
+/**
+ * Reattach + open a live event stream for an in-flight remote
+ * agent turn. The supplied `onEvent` callback fires for every
+ * sidecar event the daemon emits on this session from the moment
+ * of attach onward; the prior history is NOT replayed (the daemon
+ * doesn't buffer).
+ *
+ * Always pair with [`releaseRemoteAgentStream`] to drop the
+ * subscription when the consumer UI unmounts — otherwise the
+ * runtime callback keeps firing into a stale closure.
+ */
+export async function reattachRemoteAgentSessionStream(
+	name: string,
+	requestId: string,
+	onEvent: (event: ReattachedAgentEvent) => void,
+	helmorSessionId?: string,
+): Promise<ReattachAgentStreamResult> {
+	const channel = new Channel<ReattachedAgentEvent>();
+	channel.onmessage = onEvent;
+	return invoke<ReattachAgentStreamResult>(
+		"reattach_remote_agent_session_stream",
+		{
+			name,
+			requestId,
+			helmorSessionId: helmorSessionId ?? null,
+			onEvent: channel,
+		},
+	);
+}
+
+/**
+ * Drop the streaming subscription started by
+ * [`reattachRemoteAgentSessionStream`]. Idempotent — releasing
+ * an unknown request id returns `released=false` without erroring.
+ */
+export async function releaseRemoteAgentStream(
+	requestId: string,
+): Promise<ReleaseAgentStreamResult> {
+	return invoke<ReleaseAgentStreamResult>(
+		"release_remote_agent_session_stream",
+		{ requestId },
+	);
+}
+
+// ── remote terminals ────────────────────────────────────────────
+
+/**
+ * Streamed event from a server-side terminal. Discriminated by
+ * `event.kind`; the union matches the Rust `TerminalEventKind`
+ * enum (`stdout` / `exited` / `error`).
+ */
+export type TerminalEventNotification = {
+	terminalId: string;
+	event:
+		| { kind: "stdout"; data: string }
+		| { kind: "exited"; code: number | null }
+		| { kind: "error"; message: string };
+};
+
+export type RemoteTerminalOpenResult = {
+	pid: number;
+};
+
+export type RemoteTerminalWriteResult = {
+	bytesWritten: number;
+};
+
+/**
+ * Open a PTY-backed shell on the named remote runtime. `onEvent`
+ * fires for every `terminal.event` matching `terminalId` — stdout
+ * chunks, the exit code, or a fatal error. The returned promise
+ * resolves once the open handshake completes; output starts
+ * arriving on the next tick.
+ */
+export async function openRemoteTerminal(
+	runtimeName: string,
+	terminalId: string,
+	workspaceDir: string,
+	options: {
+		shell?: string;
+		/**
+		 * Optional non-interactive command. When set, the daemon runs
+		 * `<shell> -c "<command>"` and the PTY exits when the command
+		 * does — that's how Setup / Run scripts route through the same
+		 * terminal infrastructure on a remote-bound workspace. Leave
+		 * unset for an interactive shell (the Terminal-tab case).
+		 */
+		command?: string;
+		cols: number;
+		rows: number;
+		onEvent: (event: TerminalEventNotification) => void;
+	},
+): Promise<RemoteTerminalOpenResult> {
+	const channel = new Channel<TerminalEventNotification>();
+	channel.onmessage = options.onEvent;
+	return invoke<RemoteTerminalOpenResult>("open_remote_terminal", {
+		runtimeName,
+		terminalId,
+		workspaceDir,
+		shell: options.shell,
+		command: options.command,
+		cols: options.cols,
+		rows: options.rows,
+		channel,
+	});
+}
+
+export async function writeRemoteTerminal(
+	runtimeName: string,
+	terminalId: string,
+	data: string,
+): Promise<RemoteTerminalWriteResult> {
+	return invoke<RemoteTerminalWriteResult>("write_remote_terminal", {
+		runtimeName,
+		terminalId,
+		data,
+	});
+}
+
+export async function resizeRemoteTerminal(
+	runtimeName: string,
+	terminalId: string,
+	cols: number,
+	rows: number,
+): Promise<void> {
+	return invoke<void>("resize_remote_terminal", {
+		runtimeName,
+		terminalId,
+		cols,
+		rows,
+	});
+}
+
+export async function closeRemoteTerminal(
+	runtimeName: string,
+	terminalId: string,
+): Promise<void> {
+	return invoke<void>("close_remote_terminal", {
+		runtimeName,
+		terminalId,
+	});
+}
+
+/**
+ * Per-row metadata for a terminal still alive on the named remote.
+ * Mirrors the Rust `TerminalListEntry` wire shape — `pid` is the
+ * shell's PID on the remote, `openedAtMs` is the server-side open
+ * time so the UI can sort "most recent first" without per-client
+ * clocks.
+ */
+export type RemoteTerminalListEntry = {
+	terminalId: string;
+	pid: number;
+	workspaceDir: string;
+	openedAtMs: number;
+	cols: number;
+	rows: number;
+};
+
+/**
+ * Snapshot the server-side list of live terminals on the named
+ * remote. Returns every running PTY — both ones this desktop opened
+ * and any others (e.g. opened by a previous instance of the app, or
+ * by another machine connected to the same daemon).
+ */
+export async function listRemoteTerminals(
+	runtimeName: string,
+): Promise<RemoteTerminalListEntry[]> {
+	const result = await invoke<{ terminals: RemoteTerminalListEntry[] }>(
+		"list_remote_terminals",
+		{ runtimeName },
+	);
+	return result.terminals;
+}
+
+/**
+ * The desktop's view of "which terminal IDs did I open against this
+ * runtime?". Synchronous (no RPC round-trip) — pulled from the
+ * sidecar JSON hydrated at boot. Combine with
+ * [`listRemoteTerminals`] to mark "yours" vs "other sessions".
+ */
+export async function listOwnedTerminals(
+	runtimeName: string,
+): Promise<string[]> {
+	return invoke<string[]>("list_owned_terminals", { runtimeName });
+}
+
+/**
+ * Server-side initial state surfaced through `terminal.attach`.
+ * `scrollback` is the captured stdout since the previous attach (or
+ * since the open); paint it before the live stream resumes.
+ */
+export type RemoteTerminalAttachResult = {
+	scrollback: string;
+	cols: number;
+	rows: number;
+};
+
+/**
+ * Re-bind output for a live remote terminal to this desktop. Like
+ * [`openRemoteTerminal`] but talks to `terminal.attach` instead of
+ * `terminal.open`. The promise resolves with the captured scrollback;
+ * subsequent stdout flows on `onEvent` as it does for a fresh open.
+ */
+export async function attachRemoteTerminal(
+	runtimeName: string,
+	terminalId: string,
+	options: {
+		onEvent: (event: TerminalEventNotification) => void;
+	},
+): Promise<RemoteTerminalAttachResult> {
+	const channel = new Channel<TerminalEventNotification>();
+	channel.onmessage = options.onEvent;
+	return invoke<RemoteTerminalAttachResult>("attach_remote_terminal", {
+		runtimeName,
+		terminalId,
+		channel,
+	});
 }
 
 export type CliStatus = {
@@ -1930,6 +3087,72 @@ export type UiMutationEvent =
 			permissionMode: string | null;
 	  }
 	| { type: "activeStreamsChanged" }
+	| { type: "runtimeStateChanged"; name: string; state: RuntimeState }
+	| {
+			type: "remoteReconnectAttempt";
+			name: string;
+			attempt: number;
+			/** `null` while the attempt is in flight, `true` / `false` on
+			 * resolve. The runtime entry's RuntimeState carries the
+			 * latest failure reason. */
+			succeeded: boolean | null;
+	  }
+	| {
+			/** The daemon on this remote restarted ≥ N times inside the
+			 * sliding window — the auto-reconnect loop flagged the
+			 * pattern as a crash loop. Fired at most once per episode
+			 * (the loop's bookkeeping clears when the window slides past
+			 * the qualifying restarts).
+			 */
+			type: "remoteCrashLoopDetected";
+			name: string;
+			restartCount: number;
+			windowMs: number;
+			recentStartsMs: number[];
+	  }
+	| {
+			/** The helmor-server binary on this remote is older than
+			 * the desktop's CARGO_PKG_VERSION. The auto-install path
+			 * only reinstalls on protocol mismatch; a daemon that's
+			 * protocol-compatible but missing a recent fix would
+			 * otherwise slip through silently. */
+			type: "remoteServerVersionDrift";
+			name: string;
+			daemonVersion: string;
+			desktopVersion: string;
+	  }
+	| {
+			/** Agent-runtime bundle install on a connected remote is
+			 * happening. `step` is one of `detecting` /
+			 * `probing-manifest` / `uploading` / `verifying` /
+			 * `committing` / `bouncing-daemon`. `message` is a
+			 * human-readable label safe to render in a chip. */
+			type: "remoteBundleInstallProgress";
+			name: string;
+			step: string;
+			message: string;
+	  }
+	| {
+			/** Bundle install settled. `alreadyCurrent: true` means
+			 * the manifest matched (no files transferred) — UIs should
+			 * skip a "Done in 5.2s" toast on those. `installedFiles`
+			 * is the list of paths actually re-pushed. */
+			type: "remoteBundleInstallComplete";
+			name: string;
+			alreadyCurrent: boolean;
+			installedFiles: string[];
+			durationMs: number;
+	  }
+	| {
+			/** Bundle install failed. The connect itself still
+			 * succeeded — file ops + terminals work — but `agent.send`
+			 * will be disabled until the operator reinstalls via the
+			 * Remote Servers panel. `error` is the chained anyhow
+			 * message including all `with_context` frames. */
+			type: "remoteBundleInstallFailed";
+			name: string;
+			error: string;
+	  }
 	| { type: "slackWorkspacesChanged" }
 	| { type: "slackTokenInvalidated"; teamId: string }
 	| { type: "triageConfigChanged" }
@@ -2428,16 +3651,53 @@ export function triggerWorkspaceFetch(workspaceId: string): void {
 	void invoke("trigger_workspace_fetch", { workspaceId });
 }
 
+/**
+ * Read a file's content at a git ref. Routes through the binding-aware
+ * resolver — if `workspaceId` is bound to a remote runtime, the read
+ * happens on the remote.
+ *
+ * `filePath` may be absolute (legacy contract) or workspace-relative.
+ * Absolute paths inside the workspace root are normalised to relative
+ * by stripping the workspace prefix; anything else is passed through
+ * verbatim and the backend's seam-level sandbox rejects it.
+ */
 export async function readFileAtRef(
 	workspaceRootPath: string,
 	filePath: string,
 	gitRef: string,
+	workspaceId?: string,
 ): Promise<string | null> {
-	return await invoke<string | null>("read_file_at_ref", {
+	const relativePath = toWorkspaceRelativePath(workspaceRootPath, filePath);
+	return await readWorkspaceFileAtRef(
 		workspaceRootPath,
-		filePath,
+		relativePath,
 		gitRef,
-	});
+		workspaceId,
+	);
+}
+
+/**
+ * Normalise an absolute-or-relative `filePath` against `workspaceRootPath`.
+ * Strips the root prefix when the path starts with it; otherwise returns
+ * the input unchanged. Used by the wire-level wrappers that took absolute
+ * paths in their pre-phase-20 contract and now have to forward relative
+ * paths to the new commands.
+ */
+export function toWorkspaceRelativePath(
+	workspaceRootPath: string,
+	filePath: string,
+): string {
+	if (!filePath.startsWith("/") && !filePath.match(/^[A-Za-z]:[\\/]/)) {
+		// Already relative — nothing to strip.
+		return filePath;
+	}
+	const root = workspaceRootPath.endsWith("/")
+		? workspaceRootPath
+		: `${workspaceRootPath}/`;
+	if (filePath === workspaceRootPath || filePath.startsWith(root)) {
+		return filePath.slice(root.length);
+	}
+	return filePath;
 }
 
 export async function writeEditorFile(
@@ -2488,43 +3748,67 @@ export async function listEditorFiles(
  */
 export async function listWorkspaceFiles(
 	workspaceRootPath: string,
+	workspaceId?: string,
 ): Promise<InspectorFileItem[]> {
-	try {
-		return await invoke<InspectorFileItem[]>("list_workspace_files", {
-			workspaceRootPath,
-		});
-	} catch (error) {
-		throw new Error(
-			describeInvokeError(error, "Unable to list workspace files."),
-		);
-	}
+	const result = await getWorkspaceFileTree(workspaceRootPath, workspaceId);
+	return result.entries;
 }
 
 export async function listWorkspaceChanges(
 	workspaceRootPath: string,
 	workspaceId?: string | null,
 ): Promise<InspectorFileItem[]> {
+	// Routes through the binding-aware `get_workspace_changes` so a
+	// workspace pinned to a remote runtime serves the inspector's
+	// "changes" list from the remote container, not the laptop.
+	// `includeContent: false` keeps the wire small — the inspector
+	// only renders file rows; per-file content is fetched lazily by
+	// the diff viewer via `readWorkspaceFile`.
+	const result = await getWorkspaceChanges(
+		workspaceRootPath,
+		false,
+		workspaceId ?? undefined,
+	);
+	return result.items;
+}
+
+export async function listEditorFilesWithContent(
+	workspaceRootPath: string,
+): Promise<EditorFilesWithContentResponse> {
 	try {
-		return await invoke<InspectorFileItem[]>("list_workspace_changes", {
-			workspaceRootPath,
-			workspaceId: workspaceId ?? null,
-		});
-	} catch (error) {
-		throw new Error(
-			describeInvokeError(error, "Unable to list workspace changes."),
+		return await invoke<EditorFilesWithContentResponse>(
+			"list_editor_files_with_content",
+			{ workspaceRootPath },
 		);
+	} catch (error) {
+		throw new Error(describeInvokeError(error, "Unable to list editor files."));
 	}
+}
+
+export async function listWorkspaceChangesWithContent(
+	workspaceRootPath: string,
+	workspaceId?: string,
+): Promise<EditorFilesWithContentResponse> {
+	const result = await getWorkspaceChanges(
+		workspaceRootPath,
+		true,
+		workspaceId,
+	);
+	return { items: result.items, prefetched: result.prefetched };
 }
 
 export async function discardWorkspaceFile(
 	workspaceRootPath: string,
 	relativePath: string,
+	workspaceId?: string,
 ): Promise<void> {
 	try {
-		await invoke<void>("discard_workspace_file", {
+		await mutateWorkspaceFile(
 			workspaceRootPath,
 			relativePath,
-		});
+			{ type: "discard" },
+			workspaceId,
+		);
 	} catch (error) {
 		throw new Error(
 			describeInvokeError(error, "Unable to discard workspace file."),
@@ -2535,12 +3819,15 @@ export async function discardWorkspaceFile(
 export async function stageWorkspaceFile(
 	workspaceRootPath: string,
 	relativePath: string,
+	workspaceId?: string,
 ): Promise<void> {
 	try {
-		await invoke<void>("stage_workspace_file", {
+		await mutateWorkspaceFile(
 			workspaceRootPath,
 			relativePath,
-		});
+			{ type: "stage" },
+			workspaceId,
+		);
 	} catch (error) {
 		throw new Error(
 			describeInvokeError(error, "Unable to stage workspace file."),
@@ -2551,15 +3838,205 @@ export async function stageWorkspaceFile(
 export async function unstageWorkspaceFile(
 	workspaceRootPath: string,
 	relativePath: string,
+	workspaceId?: string,
 ): Promise<void> {
 	try {
-		await invoke<void>("unstage_workspace_file", {
+		await mutateWorkspaceFile(
 			workspaceRootPath,
 			relativePath,
-		});
+			{ type: "unstage" },
+			workspaceId,
+		);
 	} catch (error) {
 		throw new Error(
 			describeInvokeError(error, "Unable to unstage workspace file."),
+		);
+	}
+}
+
+// ── workspace inspector ops on the remote-runner seam ────────────────
+//
+// Every wrapper below routes through the binding-aware Tauri commands.
+// A `workspaceId` lets the backend resolve the pinned runtime for
+// that workspace (if any) so a workspace bound to a remote pair
+// flows over the wire transparently. Pass `undefined` (or omit) for
+// call sites that have no workspace context — the backend falls
+// back to the local runtime.
+
+export type WorkspaceMutateFileAction =
+	| { type: "write"; content: string }
+	| { type: "discard" }
+	| { type: "stage" }
+	| { type: "unstage" };
+
+export type WorkspaceFileTreeResult = {
+	entries: InspectorFileItem[];
+};
+
+export type EditorFilePrefetchItem = {
+	absolutePath: string;
+	content: string;
+};
+
+export type EditorFilesWithContentResponse = {
+	items: InspectorFileItem[];
+	prefetched: EditorFilePrefetchItem[];
+};
+
+export type WorkspaceChangesResult = {
+	items: InspectorFileItem[];
+	prefetched: EditorFilePrefetchItem[];
+};
+
+export type WorkspaceReadFileAtRefResult = {
+	content: string | null;
+};
+
+export type WorkspaceMutateFileResult = {
+	mtimeMs: number | null;
+};
+
+export async function getWorkspaceFileTree(
+	workspaceDir: string,
+	workspaceId?: string,
+	runtimeName?: string,
+): Promise<WorkspaceFileTreeResult> {
+	try {
+		return await invoke<WorkspaceFileTreeResult>("get_workspace_file_tree", {
+			workspaceDir,
+			workspaceId,
+			runtimeName,
+		});
+	} catch (error) {
+		throw new Error(
+			describeInvokeError(error, "Unable to list workspace files."),
+		);
+	}
+}
+
+export async function getWorkspaceChanges(
+	workspaceDir: string,
+	includeContent: boolean,
+	workspaceId?: string,
+	runtimeName?: string,
+): Promise<WorkspaceChangesResult> {
+	try {
+		return await invoke<WorkspaceChangesResult>("get_workspace_changes", {
+			workspaceDir,
+			includeContent,
+			workspaceId,
+			runtimeName,
+		});
+	} catch (error) {
+		throw new Error(
+			describeInvokeError(error, "Unable to list workspace changes."),
+		);
+	}
+}
+
+export async function readWorkspaceFile(
+	workspaceDir: string,
+	relativePath: string,
+	workspaceId?: string,
+	runtimeName?: string,
+): Promise<EditorFileReadResponse> {
+	try {
+		return await invoke<EditorFileReadResponse>("read_workspace_file", {
+			workspaceDir,
+			relativePath,
+			workspaceId,
+			runtimeName,
+		});
+	} catch (error) {
+		throw new Error(
+			describeInvokeError(error, "Unable to open the selected file."),
+		);
+	}
+}
+
+export async function readWorkspaceFileAtRef(
+	workspaceDir: string,
+	relativePath: string,
+	gitRef: string,
+	workspaceId?: string,
+	runtimeName?: string,
+): Promise<string | null> {
+	try {
+		const result = await invoke<WorkspaceReadFileAtRefResult>(
+			"read_workspace_file_at_ref",
+			{
+				workspaceDir,
+				relativePath,
+				gitRef,
+				workspaceId,
+				runtimeName,
+			},
+		);
+		return result.content;
+	} catch (error) {
+		throw new Error(
+			describeInvokeError(error, "Unable to read file at the given ref."),
+		);
+	}
+}
+
+export async function statWorkspaceFile(
+	workspaceDir: string,
+	relativePath: string,
+	workspaceId?: string,
+	runtimeName?: string,
+): Promise<EditorFileStatResponse> {
+	try {
+		return await invoke<EditorFileStatResponse>("stat_workspace_file", {
+			workspaceDir,
+			relativePath,
+			workspaceId,
+			runtimeName,
+		});
+	} catch (error) {
+		throw new Error(
+			describeInvokeError(error, "Unable to inspect the selected file."),
+		);
+	}
+}
+
+export async function mutateWorkspaceFile(
+	workspaceDir: string,
+	relativePath: string,
+	action: WorkspaceMutateFileAction,
+	workspaceId?: string,
+	runtimeName?: string,
+): Promise<WorkspaceMutateFileResult> {
+	return await invoke<WorkspaceMutateFileResult>("mutate_workspace_file", {
+		workspaceDir,
+		relativePath,
+		action,
+		workspaceId,
+		runtimeName,
+	});
+}
+
+/**
+ * Convenience wrapper: write a file via `mutateWorkspaceFile`. Mirrors
+ * `writeEditorFile`'s shape but routes through the binding-aware
+ * resolver so a workspace bound to a remote flows over the wire.
+ */
+export async function writeWorkspaceFile(
+	workspaceRootPath: string,
+	relativePath: string,
+	content: string,
+	workspaceId?: string,
+): Promise<WorkspaceMutateFileResult> {
+	try {
+		return await mutateWorkspaceFile(
+			workspaceRootPath,
+			relativePath,
+			{ type: "write", content },
+			workspaceId,
+		);
+	} catch (error) {
+		throw new Error(
+			describeInvokeError(error, "Unable to save the selected file."),
 		);
 	}
 }
@@ -2892,7 +4369,18 @@ export async function createWorkspaceFromRepo(
  * frontend paints with this response immediately — no placeholders.
  *
  * `sourceBranch` is the fork base for `from_branch` (default) or the
- * branch to attach to for `use_branch` (required).
+ * branch to attach to for `use_branch` (required). The kanban "create"
+ * flow forwards the user's branch picker selection here.
+ *
+ * `runtimeName` (optional): binds the new workspace to a
+ * registered remote runtime at creation time. `"local"` and `null` both
+ * mean "use the local runtime" — the backend collapses them into a NULL
+ * `workspaces.runtime_name` column so the resolver's NULL/"local"
+ * equivalence holds.
+ *
+ * `seedSessionId` (optional): pre-allocated session UUID so pre-submit
+ * paste-cache files (`cache/paste/<seedSessionId>/`) end up owned by
+ * the new session. Omit unless the caller is pre-allocating.
  */
 export async function prepareWorkspaceFromRepo(
 	repoId: string,
@@ -2900,9 +4388,7 @@ export async function prepareWorkspaceFromRepo(
 	mode?: WorkspaceMode | null,
 	branchIntent?: WorkspaceBranchIntent | null,
 	initialStatus?: WorkspaceStatus | null,
-	/** Pre-allocated session UUID, so pre-submit paste-cache files
-	 *  (`cache/paste/<seedSessionId>/`) end up owned by the new session.
-	 *  Omit unless the caller is pre-allocating. */
+	runtimeName?: string | null,
 	seedSessionId?: string | null,
 ): Promise<PrepareWorkspaceResponse> {
 	return invoke<PrepareWorkspaceResponse>("prepare_workspace_from_repo", {
@@ -2911,6 +4397,7 @@ export async function prepareWorkspaceFromRepo(
 		mode: mode ?? null,
 		branchIntent: branchIntent ?? null,
 		initialStatus: initialStatus ?? null,
+		runtimeName: runtimeName ?? null,
 		seedSessionId: seedSessionId ?? null,
 	});
 }
@@ -3515,6 +5002,73 @@ export async function startAgentMessageStream(
 	const onEvent = new Channel<AgentStreamEvent>();
 	onEvent.onmessage = (event) => callback(event);
 	await invoke("send_agent_message_stream", { request, onEvent });
+}
+
+/**
+ * Reattach to an in-flight remote agent turn and pipe its events
+ * through the same `AgentStreamEvent` channel a fresh send uses.
+ * The chat UI reuses `useStreaming`'s existing accumulator
+ * by calling this instead of `startAgentMessageStream` when the
+ * desktop knows the session is mid-stream on the remote.
+ *
+ * No new prompt fires — the daemon already accepted one when the
+ * original send went out. The desktop just subscribes + renders
+ * everything the daemon emits going forward.
+ */
+export type AgentReattachRequest = {
+	/** Daemon's per-session request id from `agent.list`. */
+	requestId: string;
+	/** Helmor session row id. */
+	helmorSessionId: string;
+	/** Workspace id. Optional for anonymous-session test flows. */
+	workspaceId?: string;
+	provider: string;
+	modelId: string;
+	/** CWD echoed on terminal envelopes. */
+	workingDirectory?: string;
+	/**
+	 * Initial value for the accumulator's resolved-model field
+	 * — the chat passes its last-known model so the
+	 * `Done` / `Aborted` envelopes look familiar before
+	 * `system.init` lands.
+	 */
+	fallbackResolvedModel?: string;
+};
+
+export type AgentReattachResponse = {
+	accepted: boolean;
+	/**
+	 * Daemon's high-water-mark seq for this session at
+	 * attach time. Stash for diagnostics + a future reattach can pass
+	 * it back as `since_seq` without a DB lookup.
+	 */
+	lastSeq: number;
+	/**
+	 * Number of journal entries the daemon will flush
+	 * through the event stream as part of the replay. Drives the
+	 * "rebuilding history N/M" workspace chip.
+	 */
+	replayedCount: number;
+	/**
+	 * Earliest seq the daemon's ring can still deliver
+	 * when the desktop's `since_seq` predated the oldest entry.
+	 * Non-null means the cold replay is partial; the chat surfaces a
+	 * "history unavailable" banner and continues live.
+	 */
+	replayGap?: number | null;
+};
+
+export async function startAgentReattachStream(
+	request: AgentReattachRequest,
+	callback: (event: AgentStreamEvent) => void,
+): Promise<AgentReattachResponse> {
+	const { Channel } = await import("@tauri-apps/api/core");
+	const onEvent = new Channel<AgentStreamEvent>();
+	onEvent.onmessage = (event) => callback(event);
+	return invoke<AgentReattachResponse>("reattach_agent_message_stream", {
+		request,
+		onEvent,
+	});
 }
 
 export async function stopAgentStream(

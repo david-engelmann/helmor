@@ -14,6 +14,24 @@ use anyhow::{Context, Result};
 #[cfg(test)]
 pub static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Acquire `TEST_ENV_LOCK`, recovering from poison.
+///
+/// Many test modules share `HELMOR_DATA_DIR` + the data-dir layout
+/// via this mutex. If ANY single test panics while holding the lock
+/// (e.g. an assertion failure in a `setup_*` helper), the mutex
+/// gets poisoned and every later `.lock().unwrap()` panics with
+/// `PoisonError` — surfacing as dozens of cascading "failures"
+/// downstream of the actual root cause. Always recover the guard
+/// from the poison error: a poisoned `()` payload has no invariant
+/// to violate, and one real test failure shouldn't quietly mark
+/// every later test red.
+#[cfg(test)]
+pub fn lock_test_env() -> std::sync::MutexGuard<'static, ()> {
+    TEST_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+}
+
 /// Name of the database file inside the data directory.
 const DB_FILENAME: &str = "helmor.db";
 

@@ -53,12 +53,16 @@ import {
 } from "@/features/shortcuts/use-app-shortcuts";
 import { useGlobalHotkeySync } from "@/features/shortcuts/use-global-hotkey-sync";
 import { useAppUpdater } from "@/features/updater/use-app-updater";
+import { useWorkspaceSearchPanel } from "@/features/workspace-search/use-workspace-search-panel";
+import { WorkspaceSearchPanel } from "@/features/workspace-search/workspace-search-panel";
 import { WorkspaceStartPage } from "@/features/workspace-start";
 import { useEnsureDefaultModel } from "@/shell/hooks/use-ensure-default-model";
+import { useOnlineReconnectKick } from "@/shell/hooks/use-online-reconnect-kick";
 import { useShellPanels } from "@/shell/hooks/use-panels";
 import { usePullLatest } from "@/shell/hooks/use-pull-latest";
 import { useThemeApplication } from "@/shell/hooks/use-theme-application";
 import { useUiSyncBridge } from "@/shell/hooks/use-ui-sync-bridge";
+import { useWorkspaceFileWatch } from "@/shell/hooks/use-workspace-file-watch";
 import {
 	findAdjacentSessionId,
 	findAdjacentWorkspaceId,
@@ -69,6 +73,7 @@ import { clampZoom, useZoom, ZOOM_STEP } from "@/shell/use-zoom";
 import {
 	createSession,
 	exitOnboardingWindowMode,
+	listRemoteRuntimes,
 	openWorkspaceInEditor,
 	type WorkspaceDetail,
 	type WorkspaceSessionSummary,
@@ -119,6 +124,9 @@ import {
 	WorkspaceToastProvider,
 } from "./lib/workspace-toast-context";
 import { resolveE2eScenarioElement } from "./shell/boot/e2e-routes";
+import { RemoteConnectionBanner } from "./shell/components/remote-connection-banner";
+import { RemoteCrashLoopBanner } from "./shell/components/remote-crash-loop-banner";
+import { RemoteVersionDriftBanner } from "./shell/components/remote-version-drift-banner";
 import { ShellInspectorPane } from "./shell/components/shell-inspector-pane";
 import { ShellResizeSeparator } from "./shell/components/shell-resize-separator";
 import { ShellSidebarPane } from "./shell/components/shell-sidebar-pane";
@@ -475,8 +483,30 @@ function AppShell({
 		startSurfaceActions.setInboxStateFilterBySource;
 	const startSourceBranch = startSurface.startSourceBranch;
 	const startMode = startSurface.startMode;
+	const startRuntimeName = startSurface.startRuntimeName;
+	const handleStartRuntimeSelect = startSurfaceActions.selectRuntime;
 	const startBranchIntent = startSurface.startBranchIntent;
 	const handleStartBranchIntentChange = startSurfaceActions.selectBranchIntent;
+	// Fetch registered runtimes so the Where picker in the
+	// Start page can list the non-local ones. The picker only appears
+	// when at least one remote is registered; the runtime-debug panel
+	// is where the operator adds them. Stale-while-revalidate suits
+	// the flow — the dropdown isn't an inner loop.
+	const remoteRuntimesQuery = useQuery({
+		queryKey: ["remote-runtimes"],
+		queryFn: listRemoteRuntimes,
+		refetchOnWindowFocus: true,
+		staleTime: 30_000,
+	});
+	const startRuntimeOptions = useMemo(() => {
+		const all = remoteRuntimesQuery.data ?? [];
+		// The "Local" option is always rendered by the picker; filter
+		// the built-in entry out of the dropdown's "remote" list so it
+		// doesn't appear twice.
+		return all
+			.filter((entry) => !entry.isLocal)
+			.map((entry) => ({ name: entry.name }));
+	}, [remoteRuntimesQuery.data]);
 	const handleStartSourceBranchSelect = startSurfaceActions.selectSourceBranch;
 	const handleStartRepositorySelect = startSurfaceActions.selectRepository;
 	const handleAddRepositoryNeedsStart =
@@ -747,6 +777,23 @@ function AppShell({
 		selectedWorkspaceDetail?.state === "archived"
 			? null
 			: (selectedWorkspaceDetail?.rootPath ?? null);
+
+	// Drive a file watcher for the currently-open workspace
+	// so the inspector's React Query keys (changes / fileTree / git
+	// status) invalidate on every debounced batch of file changes.
+	// `runtimeName` picks the local FileWatcher (None / "local") vs
+	// a remote-bound watcher dispatched over SSH; the desktop side
+	// publishes `WorkspaceFilesChanged` either way.
+	useWorkspaceFileWatch({
+		workspaceId: selectedWorkspaceId,
+		workspaceDir: workspaceRootPath,
+		runtimeName: selectedWorkspaceDetail?.runtimeName ?? null,
+	});
+
+	// Workspace-wide search panel (Cmd+Shift+S). State
+	// lives here so the global shortcut handler can open it; the
+	// panel component itself owns Esc / backdrop / button close.
+	const workspaceSearchPanel = useWorkspaceSearchPanel();
 
 	const {
 		state: editorSessionState,
@@ -1224,6 +1271,14 @@ function AppShell({
 				callback: handleOpenSettings,
 			},
 			{
+				// Discoverability for the remote-runner feature — same
+				// shape Zed / VS Code use as "Open Remote Workspace" in
+				// their command palettes. Helmor doesn't have a generic
+				// palette today, so a dedicated hotkey is the analogue.
+				id: "settings.openRemoteServers" as const,
+				callback: () => handleOpenAnnouncementSettings("remote-servers"),
+			},
+			{
 				id: "workspace.copyPath" as const,
 				callback: handleCopyWorkspacePath,
 				enabled: Boolean(workspaceRootPath),
@@ -1249,6 +1304,11 @@ function AppShell({
 			{
 				id: "workspace.filterSidebar" as const,
 				callback: () => publishShellEvent({ type: "open-sidebar-filter" }),
+			},
+			{
+				id: "workspace.search" as const,
+				callback: () => workspaceSearchPanel.open(),
+				enabled: Boolean(workspaceRootPath),
 			},
 			{
 				id: "workspace.previous" as const,
@@ -1461,6 +1521,13 @@ function AppShell({
 		reloadSettings: () => publishShellEvent({ type: "reload-settings" }),
 	});
 
+	// Track C6: fire an immediate reconnect attempt for every
+	// non-Connected remote runtime when the OS reports the network
+	// is back. The auto-reconnect loop runs independently on a 5s
+	// cadence; this collapses the wait when the user e.g. moves
+	// between Wi-Fi networks.
+	useOnlineReconnectKick();
+
 	// Close-confirmation is handled by <QuitConfirmDialog /> which registers
 	// its own onCloseRequested listener.  No need for a separate hook here.
 
@@ -1560,9 +1627,12 @@ function AppShell({
 						) : null}
 						<main
 							aria-label="Application shell"
-							className="relative h-screen overflow-hidden bg-background font-sans text-foreground antialiased"
+							className="relative flex h-screen flex-col overflow-hidden bg-background font-sans text-foreground antialiased"
 						>
-							<div className="relative flex h-full min-h-0 bg-background">
+							<RemoteCrashLoopBanner />
+							<RemoteVersionDriftBanner />
+							<RemoteConnectionBanner />
+							<div className="relative flex h-full min-h-0 flex-1 bg-background">
 								{workspaceViewMode !== "editor" && (
 									<>
 										<ShellSidebarPane
@@ -1662,6 +1732,9 @@ function AppShell({
 													onSelectBranch={handleStartSourceBranchSelect}
 													mode={startMode}
 													onModeChange={startSurfaceActions.selectMode}
+													runtimes={startRuntimeOptions}
+													selectedRuntime={startRuntimeName}
+													onSelectRuntime={handleStartRuntimeSelect}
 													branchIntent={startBranchIntent}
 													onBranchIntentChange={handleStartBranchIntentChange}
 													onCreateAndCheckoutBranch={async (branch) => {
@@ -1736,6 +1809,9 @@ function AppShell({
 													displayedWorkspaceId={displayedWorkspaceId}
 													selectedSessionId={selectedSessionId}
 													displayedSessionId={displayedSessionId}
+													runtimeName={
+														selectedWorkspaceDetail?.runtimeName ?? null
+													}
 													repoId={
 														selectedWorkspaceDetailQuery.data?.repoId ?? null
 													}
@@ -1937,6 +2013,16 @@ function AppShell({
 							onCommitIndex={(index) => {
 								quickSwitch.selectIndex(index);
 								quickSwitch.commit();
+							}}
+						/>
+						<WorkspaceSearchPanel
+							isOpen={workspaceSearchPanel.isOpen}
+							onClose={workspaceSearchPanel.close}
+							workspaceDir={workspaceRootPath}
+							workspaceId={selectedWorkspaceId}
+							runtimeName={selectedWorkspaceDetail?.runtimeName ?? null}
+							onOpenResult={(relativePath, lineNumber) => {
+								handleOpenFileReference(relativePath, lineNumber);
 							}}
 						/>
 						{closeConfirmDialog}

@@ -71,6 +71,7 @@ pub fn create_ai_workspace(params: &CreateAiWorkspaceParams) -> Result<CreateAiW
         WorkspaceBranchIntent::FromBranch,
         WorkspaceStatus::InProgress,
         None,
+        None,
     )
     .context("prepare_workspace_from_repo")?;
 

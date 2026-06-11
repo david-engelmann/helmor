@@ -63,6 +63,106 @@ pub enum UiMutationEvent {
     /// `list_active_streams`. See `agents::streaming::active_streams` for
     /// the source of truth this notification mirrors.
     ActiveStreamsChanged,
+    /// A registered remote runtime transitioned to a new connection
+    /// state. Frontends invalidate `["remote-runtimes"]` so the
+    /// list re-renders with the fresh state-keyed chip. The payload
+    /// carries the new state so listeners can short-circuit a fetch
+    /// if they're feeling clever; the canonical source remains
+    /// `list_remote_runtimes`.
+    RuntimeStateChanged {
+        name: String,
+        state: crate::remote::RuntimeState,
+    },
+    /// The auto-reconnect loop tried to re-establish a Disconnected
+    /// remote and (succeeded / failed). The desktop's reconnect banner
+    /// uses this to show retry progress without requiring a new
+    /// query — the runtime's RuntimeState (Connected on success,
+    /// Disconnected with the latest reason on failure) is the
+    /// canonical source for what the user can act on.
+    RemoteReconnectAttempt {
+        name: String,
+        attempt: u32,
+        /// `None` while the attempt is in flight; `Some(true)` when the
+        /// last attempt succeeded; `Some(false)` when it failed (the
+        /// runtime entry's RuntimeState carries the failure reason).
+        succeeded: Option<bool>,
+    },
+    /// The daemon on a registered remote has restarted ≥ N times
+    /// inside a sliding window — the auto-reconnect loop interpreted
+    /// the pattern as a crash loop and is surfacing it to the
+    /// operator. Carries the recent restart timestamps so the
+    /// receiver can render a one-glance "N restarts in M minutes"
+    /// banner; the canonical source remains the daemon's
+    /// `runtime.metrics.recentStartsMs` field.
+    ///
+    /// Fired at most once per cooldown — re-firing every tick would
+    /// spam the UI. The cooldown clears when:
+    ///   - The window slides past the qualifying restarts.
+    ///   - The user calls `acknowledge_remote_crash_loop` (clears
+    ///     the in-memory cooldown without touching the on-disk
+    ///     crash-history file).
+    RemoteCrashLoopDetected {
+        name: String,
+        /// How many restarts the daemon recorded inside `window_ms`.
+        restart_count: u32,
+        /// The sliding window used for the detection (ms).
+        window_ms: i64,
+        /// The actual restart timestamps inside the window, oldest
+        /// first. UI surfaces this as "last restart 30s ago" etc.
+        recent_starts_ms: Vec<i64>,
+    },
+    /// The helmor-server binary on this remote is older than what
+    /// the desktop ships. The auto-install path only reinstalls
+    /// when the *protocol* version disagrees; a daemon that's
+    /// protocol-compatible but missing a recent fix slips through
+    /// silently. This event surfaces the drift so the operator can
+    /// schedule a reinstall without trial-and-error debugging the
+    /// missing fix.
+    ///
+    /// Fired once per session per runtime — the desktop dedupes
+    /// in the consumer, so the auto-reconnect loop firing every
+    /// reconnect won't spam the UI.
+    RemoteServerVersionDrift {
+        name: String,
+        /// What the daemon reported in its `runtime_health.version`.
+        daemon_version: String,
+        /// `env!("CARGO_PKG_VERSION")` of the running desktop —
+        /// the version the operator's daemon should ideally match.
+        desktop_version: String,
+    },
+    /// Track D2: agent-runtime bundle install on a connected remote
+    /// is happening or has finished. Drives the "Setting up agent
+    /// runtime…" indicator in the Add-remote-server wizard + the
+    /// "Bundle: installing 1.2 / 330 MB" chip on the Remote Servers
+    /// row. Fired in three discriminated arms (camelCase tag) so the
+    /// UI can pick the right rendering:
+    ///
+    /// - `progress`: install is in flight; `step` is one of `detecting`,
+    ///   `probing-manifest`, `uploading`, `verifying`, `committing`,
+    ///   `bouncing-daemon`. `message` is a human-readable label for
+    ///   the chip.
+    /// - `complete`: install settled successfully. `alreadyCurrent` is
+    ///   `true` when the manifest matched and no scp ran; the UI uses
+    ///   this to skip the "Done — installed in 5.2s" toast on a no-op.
+    /// - `failed`: install errored. The connect path swallows the
+    ///   error (the daemon still works, file ops still work), but
+    ///   the UI surfaces a chip explaining `agent.send` will be
+    ///   disabled until the operator reinstalls via Remote Servers.
+    RemoteBundleInstallProgress {
+        name: String,
+        step: String,
+        message: String,
+    },
+    RemoteBundleInstallComplete {
+        name: String,
+        already_current: bool,
+        installed_files: Vec<String>,
+        duration_ms: u64,
+    },
+    RemoteBundleInstallFailed {
+        name: String,
+        error: String,
+    },
     /// Connected-Slack-workspace set changed (Connect / Disconnect).
     /// Frontends invalidate the workspace list query and the inbox
     /// queries for any affected team.

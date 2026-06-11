@@ -111,8 +111,8 @@ body {
  * in gently so the user doesn't see the thumb placed at a bogus size while
  * initial measured heights converge.
  *
- * Note: Phase 2 iter 8 (`09df3fd`) removed the `key={sessionId}` on
- * <ScrollArea>, so this animation no longer re-fires per session switch.
+ * Note: removing the `key={sessionId}` on <ScrollArea> means this
+ * animation no longer re-fires per session switch.
  */
 .conversation-scroll-area [data-slot="scroll-area-scrollbar"] {
 	animation: conversation-scrollbar-fade-in 300ms ease-out 400ms both;

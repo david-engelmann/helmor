@@ -934,6 +934,7 @@ mod tests {
             updated_at: "2026-01-01T00:00:00Z".to_string(),
             last_user_message_at: None,
             setup_completed_at: None,
+            runtime_name: None,
             active_run_action_id: None,
             kind: "manual".to_string(),
             ai_priming_consumed: false,
@@ -942,7 +943,7 @@ mod tests {
 
     #[test]
     fn workspace_path_for_worktree_uses_data_dir() {
-        let _guard = crate::data_dir::TEST_ENV_LOCK.lock();
+        let _guard = crate::data_dir::lock_test_env();
         let temp = tempfile::TempDir::new().unwrap();
         std::env::set_var("HELMOR_DATA_DIR", temp.path());
         let record = fixture_record(WorkspaceMode::Worktree, None);
@@ -976,7 +977,7 @@ mod tests {
 
     #[test]
     fn workspace_path_for_chat_joins_chats_dir() {
-        let _guard = crate::data_dir::TEST_ENV_LOCK.lock();
+        let _guard = crate::data_dir::lock_test_env();
         let temp = tempfile::TempDir::new().unwrap();
         std::env::set_var("HELMOR_DATA_DIR", temp.path());
         let mut record = fixture_record(WorkspaceMode::Chat, None);

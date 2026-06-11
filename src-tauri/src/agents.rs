@@ -12,7 +12,7 @@ mod builtin_claude_providers;
 mod catalog;
 pub(crate) mod claude_project_files;
 mod custom_providers;
-mod persistence;
+pub(crate) mod persistence;
 mod queries;
 mod slash_commands;
 pub(crate) mod streaming;
@@ -92,6 +92,14 @@ pub enum AgentStreamEvent {
     StreamingPartial {
         message: crate::pipeline::types::ThreadMessageLike,
     },
+    // serde's enum-level `rename_all` renames variant names but
+    // does NOT propagate into struct-variant fields, so each
+    // variant whose fields need camelCasing has to declare it
+    // itself. Drop the per-variant attribute and the wire shape
+    // silently regresses to snake_case while the TypeScript types
+    // keep claiming camelCase — caught by the 24l reattach
+    // integration test, not by the type checker.
+    #[serde(rename_all = "camelCase")]
     Done {
         provider: String,
         model_id: String,
@@ -103,6 +111,7 @@ pub enum AgentStreamEvent {
     /// User-initiated termination (stop button or app shutdown). The UI
     /// treats this as a non-error state. Persisted state includes the
     /// flushed turns and sets `sessions.status = 'aborted'`.
+    #[serde(rename_all = "camelCase")]
     Aborted {
         provider: String,
         model_id: String,
@@ -130,6 +139,7 @@ pub enum AgentStreamEvent {
     /// form elicitations and Codex's synthesized form); `url` is a
     /// URL-launcher card. The Rust side just forwards the payload — all
     /// schema normalization happens in the sidecar.
+    #[serde(rename_all = "camelCase")]
     UserInputRequest {
         provider: String,
         model_id: String,
@@ -208,7 +218,7 @@ pub async fn list_agent_model_sections() -> CmdResult<Vec<AgentModelSection>> {
 
 #[tauri::command]
 pub async fn list_cursor_models(
-    sidecar: tauri::State<'_, crate::sidecar::ManagedSidecar>,
+    sidecar: tauri::State<'_, std::sync::Arc<crate::sidecar::ManagedSidecar>>,
     api_key: Option<String>,
 ) -> CmdResult<Vec<queries::CursorModelEntry>> {
     // Inline blocking — same pattern as `list_slash_commands`.
@@ -218,7 +228,7 @@ pub async fn list_cursor_models(
 #[tauri::command]
 pub async fn send_agent_message_stream(
     app: AppHandle,
-    sidecar: tauri::State<'_, crate::sidecar::ManagedSidecar>,
+    sidecar: tauri::State<'_, std::sync::Arc<crate::sidecar::ManagedSidecar>>,
     mut request: AgentSendRequest,
     on_event: Channel<AgentStreamEvent>,
 ) -> CmdResult<()> {
@@ -261,14 +271,40 @@ pub async fn send_agent_message_stream(
         .into());
     }
 
-    let working_directory = resolve_stream_working_directory(&request)?;
+    let mut working_directory = resolve_stream_working_directory(&request)?;
+    // Track F2 path translation for remote runs: the request carries the
+    // LOCAL worktree path, but a workspace bound to a remote runs the agent
+    // in its REMOTE worktree location. Swap in the remote_path so the cwd
+    // (and the Helmor system-prompt's workspace root, both derived from
+    // `working_directory` downstream) point at the right place on the
+    // daemon's filesystem. Local/anonymous sessions and same-path remotes
+    // fall through unchanged. Without this, `agent.send` ships a cwd that
+    // doesn't exist on the remote and the spawned agent CLI fails.
+    if let Some(hsid) = request.helmor_session_id.as_deref() {
+        if let Some(remote_dir) =
+            self::streaming::transports::resolve_remote_workspace_dir(&app, hsid)
+        {
+            working_directory = std::path::PathBuf::from(remote_dir);
+        }
+    }
     let stream_id = Uuid::new_v4().to_string();
     let active_streams = app.state::<ActiveStreams>();
+
+    // Pick the right sidecar transport based on the
+    // workspace's runtime binding. Anonymous streams + workspaces
+    // bound to the local runtime keep going through the desktop's
+    // own `ManagedSidecar`; workspaces bound to a registered remote
+    // route through `agent.send` over the JSON-RPC pipe.
+    let transport = self::streaming::transports::resolve_transport(
+        &app,
+        sidecar.inner().clone(),
+        request.helmor_session_id.as_deref(),
+    );
 
     let send_result = stream_via_sidecar(
         app.clone(),
         on_event,
-        &sidecar,
+        transport,
         &active_streams,
         &stream_id,
         &model,
@@ -309,6 +345,184 @@ fn resolve_stream_working_directory(
     resolve_working_directory(request.working_directory.as_deref())
 }
 
+/// Reattach to an in-flight remote turn + stream its events into
+/// the chat. Mirrors `send_agent_message_stream` except no new
+/// prompt fires — the daemon is already running the turn, and
+/// this command just subscribes + pumps events through the same
+/// pipeline + `Channel<AgentStreamEvent>` the regular send uses.
+///
+/// The raw-events surface (dev panel event log) landed first; the
+/// chat UI wires the same primitive so a reattached turn renders as
+/// if the desktop had originated it.
+#[tauri::command]
+pub async fn reattach_agent_message_stream(
+    app: AppHandle,
+    sidecar: tauri::State<'_, std::sync::Arc<crate::sidecar::ManagedSidecar>>,
+    request: AgentReattachRequest,
+    on_event: Channel<AgentStreamEvent>,
+) -> CmdResult<AgentReattachResponse> {
+    let working_directory = resolve_working_directory(request.working_directory.as_deref())?;
+    let transport = self::streaming::transports::resolve_transport(
+        &app,
+        sidecar.inner().clone(),
+        Some(&request.helmor_session_id),
+    );
+    if transport.kind() != self::streaming::transports::TransportKind::Remote {
+        return Err(anyhow::anyhow!(
+            "reattach is only supported on remote-bound workspaces \
+             (helmor session `{}` resolves to local)",
+            request.helmor_session_id
+        )
+        .into());
+    }
+
+    // We compute a fallback model name from the request because
+    // the daemon may not have emitted `system.init` yet — the
+    // accumulator needs SOMETHING to fall back on for the
+    // resolved-model field on terminal envelopes. The frontend
+    // hook supplies the chat's last-known model.
+    let fallback_resolved_model = request
+        .fallback_resolved_model
+        .clone()
+        .unwrap_or_else(|| request.model_id.clone());
+
+    // Subscribe BEFORE attach so the daemon's journal
+    // flush (the first events fired against the freshly-swapped
+    // notifier) reaches us. Compute `since_seq` from the local DB:
+    //   - cold attach (no local rows) → `Some(0)`, full replay.
+    //   - warm attach (some rows)     → `MAX(last_event_seq)`, gap
+    //     fill only.
+    let event_rx = transport.subscribe(&request.request_id);
+    let since_seq = compute_attach_since_seq(&request.helmor_session_id);
+    let attach_result = transport
+        .agent_attach(crate::remote::AgentAttachParams {
+            request_id: request.request_id.clone(),
+            since_seq,
+        })
+        .inspect_err(|_| {
+            // Drop the subscription explicitly so the per-id slot
+            // doesn't leak when the daemon hand-off fails.
+            transport.unsubscribe(&request.request_id);
+        })?;
+    if !attach_result.found {
+        transport.unsubscribe(&request.request_id);
+        return Err(anyhow::anyhow!(
+            "remote daemon does not recognise request_id `{}` — the session likely ended",
+            request.request_id
+        )
+        .into());
+    }
+
+    self::streaming::reattach::stream_reattach_via_sidecar(
+        self::streaming::reattach::ReattachStreamInput {
+            app,
+            on_event,
+            transport,
+            event_rx,
+            request_id: request.request_id,
+            helmor_session_id: request.helmor_session_id,
+            workspace_id: request.workspace_id,
+            provider: request.provider,
+            model_id: request.model_id,
+            fallback_resolved_model,
+            working_directory,
+        },
+    );
+
+    Ok(AgentReattachResponse {
+        accepted: true,
+        last_seq: attach_result.last_seq,
+        replayed_count: attach_result.replayed_count,
+        replay_gap: attach_result.replay_gap,
+    })
+}
+
+/// Pick the `since_seq` to send on `agent.attach`.
+/// Cold attach (no local rows) → `Some(0)` so the daemon flushes
+/// the full journal; warm attach → `MAX(last_event_seq)`. Both DB
+/// failures fall back to a cold attach: better to over-replay (the
+/// `ON CONFLICT(id) DO NOTHING` clause absorbs duplicates) than to
+/// silently start mid-conversation.
+fn compute_attach_since_seq(helmor_session_id: &str) -> Option<u64> {
+    let read_result = crate::models::db::read(|conn| {
+        let has_rows = self::persistence::has_local_rows_for_session(conn, helmor_session_id)?;
+        if !has_rows {
+            return Ok((false, None));
+        }
+        let max = self::persistence::max_event_seq_for_session(conn, helmor_session_id)?;
+        Ok((true, max))
+    });
+    match read_result {
+        Ok((false, _)) => Some(0),
+        Ok((true, max)) => max,
+        Err(err) => {
+            tracing::debug!(
+                helmor_session_id = %helmor_session_id,
+                error = %format!("{err:#}"),
+                "compute_attach_since_seq: DB read failed; defaulting to cold replay"
+            );
+            Some(0)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentReattachRequest {
+    /// Daemon's per-session request id (the same id surfaced by
+    /// `agent.list`). The reattach subscription filters on it.
+    pub request_id: String,
+    /// Helmor session row id. Required so the per-session lock
+    /// + busy badge fire correctly for the reattached turn.
+    pub helmor_session_id: String,
+    /// Workspace id the session belongs to. Used by the active-
+    /// streams handle to drive the workspace's "busy" indicator.
+    /// Optional because anonymous sessions exist in some test
+    /// flows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// Provider name (claude / codex / cursor). Mirrors the
+    /// regular send's `request.provider`.
+    pub provider: String,
+    pub model_id: String,
+    /// CWD reported on terminal envelopes. Mirrors the regular
+    /// send's working_directory resolution.
+    pub working_directory: Option<String>,
+    /// Optional initial value for the accumulator's
+    /// resolved-model field. The chat passes whatever it last
+    /// rendered; if absent we fall back to `model_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_resolved_model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentReattachResponse {
+    /// Always `true` on Ok return — the actual event flow
+    /// happens via the supplied `Channel`, so this response is
+    /// just the IPC ack. A failed resolve / non-remote workspace
+    /// surfaces as the command's Err, not as `accepted=false`.
+    pub accepted: bool,
+    /// Daemon's high-water-mark seq at attach time.
+    /// The frontend stashes this for diagnostics + a future
+    /// reconnect can pass it back as `since_seq`.
+    #[serde(default)]
+    pub last_seq: u64,
+    /// Number of journal entries the daemon is about
+    /// to flush through the event stream as part of the replay.
+    /// Drives the workspace header chip's "rebuilding N/M events"
+    /// progress affordance.
+    #[serde(default)]
+    pub replayed_count: u64,
+    /// Earliest seq the daemon's ring can still
+    /// deliver when the desktop's `since_seq` predated the oldest
+    /// entry. `Some` means the cold replay is a partial catch-up;
+    /// the chat header shows a "history unavailable; new turns
+    /// will appear here" banner and continues live.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_gap: Option<u64>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentStopRequest {
@@ -331,7 +545,8 @@ pub async fn list_active_streams(
 
 #[tauri::command]
 pub async fn stop_agent_stream(
-    sidecar: tauri::State<'_, crate::sidecar::ManagedSidecar>,
+    app: AppHandle,
+    sidecar: tauri::State<'_, std::sync::Arc<crate::sidecar::ManagedSidecar>>,
     request: AgentStopRequest,
 ) -> CmdResult<()> {
     let stop_req = crate::sidecar::SidecarRequest {
@@ -342,7 +557,18 @@ pub async fn stop_agent_stream(
             "provider": request.provider.unwrap_or_else(|| "claude".to_string()),
         }),
     };
-    sidecar
+    // Route the stop through the same transport
+    // resolver as the send. `request.session_id` is the helmor
+    // session id (frontend reads it off `ActiveStreamSummary`),
+    // which is what the resolver needs to look up the workspace's
+    // bound runtime. Anonymous streams + locally-bound workspaces
+    // still hit the desktop's `ManagedSidecar`.
+    let transport = self::streaming::transports::resolve_transport(
+        &app,
+        sidecar.inner().clone(),
+        Some(&request.session_id),
+    );
+    transport
         .send(&stop_req)
         .map_err(|e| anyhow::anyhow!("Failed to stop session: {e}"))?;
     Ok(())
@@ -383,7 +609,7 @@ pub struct AgentSteerResponse {
 #[tauri::command]
 pub async fn steer_agent_stream(
     app: AppHandle,
-    sidecar: tauri::State<'_, crate::sidecar::ManagedSidecar>,
+    sidecar: tauri::State<'_, std::sync::Arc<crate::sidecar::ManagedSidecar>>,
     request: AgentSteerRequest,
 ) -> CmdResult<AgentSteerResponse> {
     let prompt = request.prompt.trim().to_string();
@@ -416,9 +642,20 @@ pub async fn steer_agent_stream(
         }),
     };
 
-    let rx = sidecar.subscribe(&request_id);
-    if let Err(error) = sidecar.send(&steer_req) {
-        sidecar.unsubscribe(&request_id);
+    // Route the steer through the workspace's bound
+    // transport. `request.session_id` is the helmor session id
+    // (matches the resolver's contract on `send_agent_message_stream`
+    // + `stop_agent_stream`). Remote-bound workspaces hit the
+    // daemon's sidecar; local-bound ones keep using the desktop's
+    // own `ManagedSidecar`.
+    let transport = self::streaming::transports::resolve_transport(
+        &app,
+        sidecar.inner().clone(),
+        Some(&request.session_id),
+    );
+    let rx = transport.subscribe(&request_id);
+    if let Err(error) = transport.send(&steer_req) {
+        transport.unsubscribe(&request_id);
         return Err(anyhow::anyhow!("Sidecar send failed: {error}").into());
     }
 
@@ -469,7 +706,7 @@ pub async fn steer_agent_stream(
     .await
     .map_err(|e| anyhow::anyhow!("Steer worker join failed: {e}"))?;
 
-    sidecar.unsubscribe(&rid_for_worker);
+    transport.unsubscribe(&rid_for_worker);
     let (accepted, reason) = outcome?;
     Ok(AgentSteerResponse { accepted, reason })
 }
@@ -485,7 +722,7 @@ pub struct PermissionResponseRequest {
 
 #[tauri::command]
 pub async fn respond_to_permission_request(
-    sidecar: tauri::State<'_, crate::sidecar::ManagedSidecar>,
+    sidecar: tauri::State<'_, std::sync::Arc<crate::sidecar::ManagedSidecar>>,
     request: PermissionResponseRequest,
 ) -> CmdResult<()> {
     tracing::info!(permission_id = %request.permission_id, behavior = %request.behavior, "Permission response");
@@ -527,7 +764,7 @@ pub struct UserInputResponseRequest {
 
 #[tauri::command]
 pub async fn respond_to_user_input(
-    sidecar: tauri::State<'_, crate::sidecar::ManagedSidecar>,
+    sidecar: tauri::State<'_, std::sync::Arc<crate::sidecar::ManagedSidecar>>,
     request: UserInputResponseRequest,
 ) -> CmdResult<()> {
     tracing::info!(
@@ -554,7 +791,7 @@ pub async fn respond_to_user_input(
 #[tauri::command]
 pub async fn generate_session_title(
     app: AppHandle,
-    sidecar: tauri::State<'_, crate::sidecar::ManagedSidecar>,
+    sidecar: tauri::State<'_, std::sync::Arc<crate::sidecar::ManagedSidecar>>,
     request: GenerateSessionTitleRequest,
 ) -> CmdResult<GenerateSessionTitleResponse> {
     queries::generate_session_title(app, sidecar, request).await
@@ -563,7 +800,7 @@ pub async fn generate_session_title(
 #[tauri::command]
 pub async fn list_slash_commands(
     app: AppHandle,
-    sidecar: tauri::State<'_, crate::sidecar::ManagedSidecar>,
+    sidecar: tauri::State<'_, std::sync::Arc<crate::sidecar::ManagedSidecar>>,
     cache: tauri::State<'_, SlashCommandCache>,
     request: ListSlashCommandsRequest,
 ) -> CmdResult<SlashCommandsResponse> {
@@ -768,7 +1005,7 @@ mod tests {
     #[test]
     fn incremental_persist_writes_effort_and_permission_mode() {
         let dir = tempfile::tempdir().unwrap();
-        let _guard = crate::data_dir::TEST_ENV_LOCK.lock().unwrap();
+        let _guard = crate::data_dir::lock_test_env();
         std::env::set_var("HELMOR_DATA_DIR", dir.path());
 
         let db_path = setup_test_db(dir.path());
@@ -841,7 +1078,7 @@ mod tests {
     #[test]
     fn incremental_persist_preserves_existing_values_when_null() {
         let dir = tempfile::tempdir().unwrap();
-        let _guard = crate::data_dir::TEST_ENV_LOCK.lock().unwrap();
+        let _guard = crate::data_dir::lock_test_env();
         std::env::set_var("HELMOR_DATA_DIR", dir.path());
 
         let db_path = setup_test_db(dir.path());
@@ -899,7 +1136,7 @@ mod tests {
     #[test]
     fn incremental_persist_turn_messages() {
         let dir = tempfile::tempdir().unwrap();
-        let _guard = crate::data_dir::TEST_ENV_LOCK.lock().unwrap();
+        let _guard = crate::data_dir::lock_test_env();
         std::env::set_var("HELMOR_DATA_DIR", dir.path());
 
         let db_path = setup_test_db(dir.path());
@@ -935,8 +1172,8 @@ mod tests {
                     .to_string(),
         };
 
-        let _ = persist_turn_message(&conn, &ctx, &turn1, "opus").unwrap();
-        let _ = persist_turn_message(&conn, &ctx, &turn2, "opus").unwrap();
+        let _ = persist_turn_message(&conn, &ctx, &turn1, "opus", None).unwrap();
+        let _ = persist_turn_message(&conn, &ctx, &turn2, "opus", None).unwrap();
 
         // Verify: 3 messages so far (user + 2 turns)
         let msg_count: i64 = conn
@@ -969,7 +1206,7 @@ mod tests {
         use crate::pipeline::types::MessageRole as PipelineRole;
 
         let dir = tempfile::tempdir().unwrap();
-        let _guard = crate::data_dir::TEST_ENV_LOCK.lock().unwrap();
+        let _guard = crate::data_dir::lock_test_env();
         std::env::set_var("HELMOR_DATA_DIR", dir.path());
 
         let db_path = setup_test_db(dir.path());
@@ -1027,7 +1264,7 @@ mod tests {
         //    the `while persisted < turns_len { persist_turn_message(...) }`
         //    loop in `streaming.rs`.
         for i in 0..acc.turns_len() {
-            persist_turn_message(&conn, &ctx, acc.turn_at(i), &ctx.model_id).unwrap();
+            persist_turn_message(&conn, &ctx, acc.turn_at(i), &ctx.model_id, None).unwrap();
         }
 
         // 4. Assert one-shot persistence: exactly one DB row per user
@@ -1067,5 +1304,65 @@ mod tests {
         assert_eq!(messages[3].role, PipelineRole::Assistant);
 
         std::env::remove_var("HELMOR_DATA_DIR");
+    }
+
+    // ── compute_attach_since_seq ──────────────────────────────────
+
+    /// Cold-attach gate. A session with no local rows must receive
+    /// `Some(0)` so the daemon flushes its full journal; a session
+    /// with rows but no journal data falls back to `None` from
+    /// `MAX(...)`; a session with journal data returns its
+    /// high-water-mark.
+    #[test]
+    fn compute_attach_since_seq_selects_cold_warm_paths() {
+        use crate::testkit::TestEnv;
+        let env = TestEnv::new("compute-attach-since-seq");
+        let conn = env.db_connection();
+        // Seed the FK chain so session_messages inserts are legal.
+        conn.execute(
+            "INSERT INTO repos (id, name, remote_url, default_branch, root_path) VALUES ('r1', 'demo', NULL, 'main', '/tmp/demo')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO workspaces (id, repository_id, directory_name, state, status, branch, display_order) VALUES ('w1', 'r1', 'demo', 'ready', 'in-progress', 'main', 100)",
+            [],
+        ).unwrap();
+        // Three sessions: cold (no rows), warm-legacy (rows but
+        // NULL seq), warm-modern (rows with seq).
+        for id in ["hs-cold", "hs-warm-legacy", "hs-warm-modern"] {
+            conn.execute(
+                "INSERT INTO sessions (id, workspace_id, title, agent_type, status, model, permission_mode) VALUES (?1, 'w1', 't', 'claude', 'idle', 'opus', 'default')",
+                [id],
+            )
+            .unwrap();
+        }
+        // warm-legacy: row with NULL last_event_seq (local-only path).
+        conn.execute(
+            "INSERT INTO session_messages (id, session_id, role, content, last_event_seq) VALUES ('m1', 'hs-warm-legacy', 'assistant', '{}', NULL)",
+            [],
+        ).unwrap();
+        // warm-modern: rows with explicit seqs.
+        conn.execute(
+            "INSERT INTO session_messages (id, session_id, role, content, last_event_seq) VALUES ('m2', 'hs-warm-modern', 'assistant', '{}', 12)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO session_messages (id, session_id, role, content, last_event_seq) VALUES ('m3', 'hs-warm-modern', 'assistant', '{}', 42)",
+            [],
+        ).unwrap();
+
+        // Cold session: fetch full journal.
+        assert_eq!(compute_attach_since_seq("hs-cold"), Some(0));
+        // Warm-legacy: rows exist but no journal data → None means
+        // "I don't have a since to ask for; daemon may interpret as
+        // cold attach but the existence of rows means we shouldn't
+        // ask for since=0 either (would double-write the local
+        // prefix). See compute_attach_since_seq comment + 24q-1
+        // helper contract.
+        assert_eq!(compute_attach_since_seq("hs-warm-legacy"), None);
+        // Warm-modern: high-water-mark.
+        assert_eq!(compute_attach_since_seq("hs-warm-modern"), Some(42));
+        // Unknown session → cold (no local rows for that id).
+        assert_eq!(compute_attach_since_seq("hs-unknown"), Some(0));
     }
 }

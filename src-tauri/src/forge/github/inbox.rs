@@ -1426,7 +1426,12 @@ fn fetch_search(
     }
     let query = with_search_first(ISSUE_PR_SEARCH_QUERY, limit);
 
-    match run_graphql::<GraphqlSearchEnvelope<IssueOrPrNode>>(login, &query, &variables)? {
+    match run_graphql::<GraphqlSearchEnvelope<IssueOrPrNode>>(
+        &crate::forge::command::ForgeRunner::local(),
+        login,
+        &query,
+        &variables,
+    )? {
         GraphqlOutcome::Auth => Ok(FetchOutcome::Auth),
         GraphqlOutcome::Ok(envelope) => {
             if let Some(errors) = envelope.errors {
@@ -1473,7 +1478,12 @@ fn fetch_discussion_search(
     }
     let query = with_search_first(DISCUSSION_SEARCH_QUERY, limit);
 
-    match run_graphql::<GraphqlSearchEnvelope<DiscussionNode>>(login, &query, &variables)? {
+    match run_graphql::<GraphqlSearchEnvelope<DiscussionNode>>(
+        &crate::forge::command::ForgeRunner::local(),
+        login,
+        &query,
+        &variables,
+    )? {
         GraphqlOutcome::Auth => Ok(FetchOutcome::Auth),
         GraphqlOutcome::Ok(envelope) => {
             if let Some(errors) = envelope.errors {

@@ -234,7 +234,7 @@ describe("AssistantToolCall — synthetic Prompt tool", () => {
 		expect(container.querySelector("svg")).not.toBeNull();
 	});
 
-	it("exposes the prompt text via the expandable details panel", () => {
+	it("exposes the prompt text auto-expanded so the delegated work is visible at a glance", () => {
 		const { container, queryByText } = render(
 			<AssistantToolCall
 				toolName="Prompt"
@@ -243,21 +243,19 @@ describe("AssistantToolCall — synthetic Prompt tool", () => {
 			/>,
 		);
 
-		// Twist closed by default — text shouldn't render until expanded
-		// to mirror the rest of the tool-call UX.
+		// The Prompt tool's `info.body` is the prompt text itself, which
+		// fits the auto-open heuristic (one line, well under the byte
+		// cap), so the panel opens by default — matching the wider
+		// "short tool output is visible at a glance" rule.
 		const details = container.querySelector("details") as HTMLDetailsElement;
 		expect(details).not.toBeNull();
-		expect(details.open).toBe(false);
-		expect(queryByText(longPrompt)).not.toBeInTheDocument();
-
-		// JSDOM doesn't auto-fire `toggle` when you click a `<summary>`,
-		// so set `open` directly and dispatch the native event the React
-		// `onToggle` handler listens for. This mirrors what a real
-		// browser does on click. (`fireEvent.toggle` doesn't exist in
-		// the testing-library helper map; use a raw Event.)
-		details.open = true;
-		fireEvent(details, new Event("toggle", { bubbles: false }));
+		expect(details.open).toBe(true);
 		expect(queryByText(longPrompt)).toBeInTheDocument();
+
+		// User can collapse it manually and the choice sticks.
+		details.open = false;
+		fireEvent(details, new Event("toggle", { bubbles: false }));
+		expect(queryByText(longPrompt)).not.toBeInTheDocument();
 	});
 });
 

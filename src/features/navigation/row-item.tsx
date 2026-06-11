@@ -9,6 +9,7 @@ import {
 	Pin,
 	PinOff,
 	RotateCcw,
+	Server,
 	Split,
 	Trash2,
 } from "lucide-react";
@@ -21,6 +22,7 @@ import {
 	useState,
 } from "react";
 import { HelmorThinkingIndicator } from "@/components/helmor-thinking-indicator";
+import { RuntimeHostChip } from "@/components/runtime-host-chip";
 import { Button } from "@/components/ui/button";
 import {
 	ContextMenu,
@@ -96,6 +98,20 @@ export type WorkspaceRowItemProps = {
 	onDeleteWorkspace?: (workspaceId: string) => void;
 	onTogglePin?: (workspaceId: string, currentlyPinned: boolean) => void;
 	onSetWorkspaceStatus?: (workspaceId: string, status: WorkspaceStatus) => void;
+	/**
+	 * Track F1: rebind the workspace to a different runtime. `runtimeName`
+	 * is the registry entry name (e.g. `"dev.box"`) or `null` to clear the
+	 * binding back to the implicit local runtime. The submenu's choices
+	 * are derived from `availableRuntimes` so a workspace can be moved to
+	 * any registered remote without leaving the sidebar.
+	 */
+	onMoveToRuntime?: (workspaceId: string, runtimeName: string | null) => void;
+	/**
+	 * Track F1: registered runtime names surfaced as Move-to choices.
+	 * Empty when no remotes are connected — the submenu collapses to just
+	 * "Local" so the user can still un-bind.
+	 */
+	availableRuntimes?: ReadonlyArray<{ name: string }>;
 	/** Live group id — flows through props so no stale closure on grouping flip. */
 	groupId?: string;
 	onDragPointerDown?: (args: {
@@ -158,6 +174,8 @@ export const WorkspaceRowItem = memo(
 		onDeleteWorkspace,
 		onTogglePin,
 		onSetWorkspaceStatus,
+		onMoveToRuntime,
+		availableRuntimes,
 		groupId,
 		onDragPointerDown,
 		disableHoverCard,
@@ -423,6 +441,13 @@ export const WorkspaceRowItem = memo(
 							<HyperText text={displayTitle} className="inline" />
 						</span>
 					);
+					// Surface the bound remote runtime inline so an
+					// operator can tell at a glance "this row runs on dev.box"
+					// without opening the hover card. `shrink-0` on the chip
+					// keeps it visible even when the title truncates.
+					const runtimeChipSlot = (
+						<RuntimeHostChip runtimeName={row.runtimeName} />
+					);
 					// Chat workspaces have no real repo, so skip the avatar
 					// slot entirely — the branch icon (MessageCircle in
 					// chat mode) carries the leading visual identity. Falls
@@ -434,6 +459,7 @@ export const WorkspaceRowItem = memo(
 								{branchSlot}
 								<div className="row-content-fade flex min-w-0 flex-1 items-center gap-2">
 									{titleSlot}
+									{runtimeChipSlot}
 								</div>
 							</div>
 						);
@@ -453,6 +479,7 @@ export const WorkspaceRowItem = memo(
 							<div className="row-content-fade flex min-w-0 flex-1 items-center gap-2">
 								{branchSlot}
 								{titleSlot}
+								{runtimeChipSlot}
 							</div>
 						</div>
 					);
@@ -631,6 +658,46 @@ export const WorkspaceRowItem = memo(
 								/>
 								<span>Move into a new worktree</span>
 							</ContextMenuItem>
+						) : null}
+
+						{/* Track F1: rebind the workspace's runtime without
+						    leaving the sidebar. The submenu lists each
+						    registered remote + a "Local" reset; clicking
+						    fires `setWorkspaceRuntimeBinding`. */}
+						{onMoveToRuntime && !isRestoreAction ? (
+							<ContextMenuSub>
+								<ContextMenuSubTrigger>
+									<Server className="size-4 shrink-0" strokeWidth={1.6} />
+									<span>Move to runtime</span>
+								</ContextMenuSubTrigger>
+								<ContextMenuSubContent>
+									<ContextMenuItem
+										onClick={() => onMoveToRuntime(row.id, null)}
+										data-testid="row-move-to-runtime-local"
+									>
+										<Laptop className="size-4 shrink-0" strokeWidth={1.6} />
+										<span className="flex-1">Local</span>
+										{!row.runtimeName || row.runtimeName === "local" ? (
+											<span className="ml-auto text-foreground">✓</span>
+										) : null}
+									</ContextMenuItem>
+									{(availableRuntimes ?? [])
+										.filter((r) => r.name !== "local")
+										.map((r) => (
+											<ContextMenuItem
+												key={r.name}
+												onClick={() => onMoveToRuntime(row.id, r.name)}
+												data-testid={`row-move-to-runtime-${r.name}`}
+											>
+												<Server className="size-4 shrink-0" strokeWidth={1.6} />
+												<span className="flex-1">{r.name}</span>
+												{row.runtimeName === r.name ? (
+													<span className="ml-auto text-foreground">✓</span>
+												) : null}
+											</ContextMenuItem>
+										))}
+								</ContextMenuSubContent>
+							</ContextMenuSub>
 						) : null}
 
 						<ContextMenuSeparator />

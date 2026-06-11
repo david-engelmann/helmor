@@ -1,3 +1,4 @@
+use crate::forge::command::ForgeRunner;
 use crate::forge::{
     self,
     accounts::{self, ForgeAccount},
@@ -5,6 +6,44 @@ use crate::forge::{
     ForgeProvider, InboxFilters, InboxItemDetail, InboxKind, InboxKindLabels, InboxPage,
     InboxSource, RemoteState,
 };
+use crate::remote::registry::RuntimeRegistry;
+use crate::remote::workspace_bindings::WorkspaceRuntimeBindings;
+use std::sync::Arc;
+
+/// Resolve a workspace's `ForgeRunner` from the active bindings +
+/// registry. A non-`local` binding produces a runtime-bound runner;
+/// everything else (no binding, `local` binding, missing runtime)
+/// degrades to the laptop-local path so the existing behaviour is
+/// preserved byte-for-byte for unbound workspaces.
+///
+/// Failure to load a binding (DB error, JSON parse failure, dropped
+/// runtime) is logged and degraded to local — a flaky bindings file
+/// shouldn't stop the user from polling PR status.
+pub(crate) fn forge_runner_for_workspace(
+    workspace_id: &str,
+    registry: &Arc<RuntimeRegistry>,
+    bindings: &Arc<WorkspaceRuntimeBindings>,
+) -> ForgeRunner {
+    let column_binding = crate::models::workspaces::load_workspace_runtime_name(workspace_id)
+        .ok()
+        .flatten();
+    let bound = column_binding.or_else(|| bindings.lookup(workspace_id));
+    match bound {
+        Some(name) if name != "local" => match registry.lookup(Some(&name)) {
+            Ok(rt) => ForgeRunner::with_runtime(rt),
+            Err(err) => {
+                tracing::warn!(
+                    workspace_id,
+                    bound_runtime = %name,
+                    error = %format!("{err:#}"),
+                    "remote-runner: forge dispatch falling back to local — bound runtime not registered"
+                );
+                ForgeRunner::local()
+            }
+        },
+        _ => ForgeRunner::local(),
+    }
+}
 // `accounts` re-exports the dispatchers; provider-specific work
 // happens inside `forge::github::accounts` / `forge::gitlab::accounts`
 // via the `ForgeAccountBackend` trait.
@@ -342,10 +381,15 @@ pub async fn resize_forge_cli_auth_terminal(
 pub async fn refresh_workspace_change_request(
     workspace_id: String,
     app: tauri::AppHandle,
+    registry: tauri::State<'_, Arc<RuntimeRegistry>>,
+    bindings: tauri::State<'_, Arc<WorkspaceRuntimeBindings>>,
 ) -> CmdResult<Option<ChangeRequestInfo>> {
     let lookup_workspace_id = workspace_id.clone();
+    let registry = Arc::clone(&registry);
+    let bindings = Arc::clone(&bindings);
     let (result, outcome) = run_blocking(move || {
-        let result = forge::refresh_workspace_change_request(&lookup_workspace_id)?;
+        let runner = forge_runner_for_workspace(&lookup_workspace_id, &registry, &bindings);
+        let result = forge::refresh_workspace_change_request(&lookup_workspace_id, runner)?;
         let outcome =
             crate::workspaces::sync_workspace_pr_state(&lookup_workspace_id, result.as_ref())?;
         Ok::<_, anyhow::Error>((result, outcome))
@@ -370,11 +414,17 @@ pub async fn get_workspace_forge_action_status(
     workspace_id: String,
     app: tauri::AppHandle,
     edge_store: State<'_, ForgeAuthEdgeStore>,
+    registry: tauri::State<'_, Arc<RuntimeRegistry>>,
+    bindings: tauri::State<'_, Arc<WorkspaceRuntimeBindings>>,
 ) -> CmdResult<ForgeActionStatus> {
     let lookup_workspace_id = workspace_id.clone();
-    let status =
-        run_blocking(move || forge::lookup_workspace_forge_action_status(&lookup_workspace_id))
-            .await?;
+    let registry = Arc::clone(&registry);
+    let bindings = Arc::clone(&bindings);
+    let status = run_blocking(move || {
+        let runner = forge_runner_for_workspace(&lookup_workspace_id, &registry, &bindings);
+        forge::lookup_workspace_forge_action_status(&lookup_workspace_id, runner)
+    })
+    .await?;
     if should_publish_workspace_forge_changed(&edge_store, &workspace_id, status.remote_state) {
         ui_sync::publish(
             &app,
@@ -388,32 +438,58 @@ pub async fn get_workspace_forge_action_status(
 pub async fn get_workspace_forge_check_insert_text(
     workspace_id: String,
     item_id: String,
+    registry: tauri::State<'_, Arc<RuntimeRegistry>>,
+    bindings: tauri::State<'_, Arc<WorkspaceRuntimeBindings>>,
 ) -> CmdResult<String> {
-    run_blocking(move || forge::lookup_workspace_forge_check_insert_text(&workspace_id, &item_id))
-        .await
+    let registry = Arc::clone(&registry);
+    let bindings = Arc::clone(&bindings);
+    run_blocking(move || {
+        let runner = forge_runner_for_workspace(&workspace_id, &registry, &bindings);
+        forge::lookup_workspace_forge_check_insert_text(&workspace_id, &item_id, runner)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn merge_workspace_change_request(
     workspace_id: String,
     app: tauri::AppHandle,
+    registry: tauri::State<'_, Arc<RuntimeRegistry>>,
+    bindings: tauri::State<'_, Arc<WorkspaceRuntimeBindings>>,
 ) -> CmdResult<Option<ChangeRequestInfo>> {
-    run_change_request_action(workspace_id, app, forge::merge_workspace_change_request).await
+    let registry = Arc::clone(&registry);
+    let bindings = Arc::clone(&bindings);
+    run_change_request_action(workspace_id, app, move |ws| {
+        let runner = forge_runner_for_workspace(ws, &registry, &bindings);
+        forge::merge_workspace_change_request(ws, runner)
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn close_workspace_change_request(
     workspace_id: String,
     app: tauri::AppHandle,
+    registry: tauri::State<'_, Arc<RuntimeRegistry>>,
+    bindings: tauri::State<'_, Arc<WorkspaceRuntimeBindings>>,
 ) -> CmdResult<Option<ChangeRequestInfo>> {
-    run_change_request_action(workspace_id, app, forge::close_workspace_change_request).await
+    let registry = Arc::clone(&registry);
+    let bindings = Arc::clone(&bindings);
+    run_change_request_action(workspace_id, app, move |ws| {
+        let runner = forge_runner_for_workspace(ws, &registry, &bindings);
+        forge::close_workspace_change_request(ws, runner)
+    })
+    .await
 }
 
-async fn run_change_request_action(
+async fn run_change_request_action<F>(
     workspace_id: String,
     app: tauri::AppHandle,
-    action: fn(&str) -> anyhow::Result<Option<ChangeRequestInfo>>,
-) -> CmdResult<Option<ChangeRequestInfo>> {
+    action: F,
+) -> CmdResult<Option<ChangeRequestInfo>>
+where
+    F: FnOnce(&str) -> anyhow::Result<Option<ChangeRequestInfo>> + Send + 'static,
+{
     let sync_workspace_id = workspace_id.clone();
     let (result, outcome) = run_blocking(move || {
         let result = action(&sync_workspace_id)?;

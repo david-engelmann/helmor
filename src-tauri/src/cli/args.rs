@@ -199,6 +199,8 @@ pub enum Commands {
     },
     /// Report whether the current Helmor CLI entrypoint is installed to PATH and which data mode it uses.
     CliStatus,
+    /// One-shot diagnostic snapshot for local + remote state (SSH reachability, daemon binary, recent log tail).
+    Doctor,
     /// Ask a running Helmor app to quit (noop when it isn't running).
     Quit,
     /// Run as an MCP (Model Context Protocol) server over stdio.

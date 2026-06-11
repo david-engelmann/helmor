@@ -60,13 +60,18 @@ pub(super) fn persist_user_message(
 
 /// Persist a single intermediate turn (assistant message or user tool
 /// result). Called each time the accumulator produces a complete turn
-/// during streaming. Returns the DB message ID.
+/// during streaming. Returns the DB message ID plus a flag indicating
+/// whether the row was actually inserted (false on the
+/// `ON CONFLICT(id) DO NOTHING` idempotent no-op path — load-bearing
+/// for the reattach loop's UI-sync gate: a refetch fired on a no-op
+/// re-write would fight in-flight streaming).
 pub(super) fn persist_turn_message(
     conn: &Connection,
     ctx: &ExchangeContext,
     turn: &CollectedTurn,
     _resolved_model: &str,
-) -> Result<String> {
+    event_seq: Option<u64>,
+) -> Result<(String, bool)> {
     let now = current_timestamp_string()?;
     // Use the pre-assigned ID from the turn so streaming and historical
     // message IDs are the same UUID.
@@ -76,15 +81,37 @@ pub(super) fn persist_turn_message(
         &turn.content_json,
     )?;
 
-    conn.execute(
+    // ON CONFLICT(id) DO NOTHING makes the insert idempotent. The
+    // regular send path can't double-write a turn (its
+    // `persisted_turn_count` cursor monotonically advances), so this
+    // never matters for it; the reattach path in `streaming::reattach`
+    // re-pushes the daemon's full event log through a fresh accumulator,
+    // which can resurface turns the original sender already persisted.
+    // Letting the second insert be a no-op keeps DB content
+    // deterministic without forcing each writer to coordinate.
+    //
+    // `last_event_seq` stores the daemon-journal seq of the event
+    // that produced this row. NULL on local-sidecar writes and on
+    // remote writes from runtimes that predate the journal; the
+    // reattach call queries `MAX(last_event_seq)` per session as
+    // its `since_seq` cursor.
+    let rows_changed = conn.execute(
         r#"
             INSERT INTO session_messages (
-              id, session_id, role, content, created_at, sent_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+              id, session_id, role, content, created_at, sent_at, last_event_seq
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6)
+            ON CONFLICT(id) DO NOTHING
             "#,
-        params![msg_id, ctx.helmor_session_id, turn.role, content, now],
+        params![
+            msg_id,
+            ctx.helmor_session_id,
+            turn.role,
+            content,
+            now,
+            event_seq.map(|s| s as i64),
+        ],
     )?;
-    Ok(msg_id)
+    Ok((msg_id, rows_changed == 1))
 }
 
 pub(super) fn persist_error_message(
@@ -92,6 +119,7 @@ pub(super) fn persist_error_message(
     ctx: &ExchangeContext,
     _resolved_model: &str,
     message: &str,
+    event_seq: Option<u64>,
 ) -> Result<String> {
     let now = current_timestamp_string()?;
     let msg_id = uuid::Uuid::new_v4().to_string();
@@ -104,19 +132,79 @@ pub(super) fn persist_error_message(
     conn.execute(
         r#"
             INSERT INTO session_messages (
-              id, session_id, role, content, created_at, sent_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+              id, session_id, role, content, created_at, sent_at, last_event_seq
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6)
             "#,
         params![
             msg_id,
             ctx.helmor_session_id,
             MessageRole::Error,
             payload,
-            now
+            now,
+            event_seq.map(|s| s as i64),
         ],
     )?;
 
     Ok(msg_id)
+}
+
+/// The desktop's high-water-mark across all rows for a given
+/// session. Used by the remote-runner reattach call to compute
+/// `since_seq` — events newer than this haven't been persisted
+/// locally, so the daemon should replay them.
+///
+/// Returns `None` when:
+/// - the session has no rows, or
+/// - all rows have `last_event_seq = NULL` (legacy rows from before
+///   the journal landed, or rows produced by the local-sidecar path
+///   which doesn't participate in the daemon's journal).
+///
+/// In both `None` cases the caller passes `since_seq=None` (cold
+/// attach), and the daemon flushes the full journal — the desktop's
+/// `ON CONFLICT(id) DO NOTHING` and 24n persistence absorb the
+/// replay without duplicating rows the local DB happens to already
+/// have.
+pub(crate) fn max_event_seq_for_session(
+    conn: &Connection,
+    helmor_session_id: &str,
+) -> Result<Option<u64>> {
+    // SELECT MAX(...) always returns one row (NULL when no rows
+    // match or all values are NULL), so `query_row` is safe — no
+    // QueryReturnedNoRows risk. Pass `Option<i64>` explicitly so
+    // SQLite NULLs decode as None rather than producing an
+    // InvalidColumnType error.
+    let max: Option<i64> = conn.query_row(
+        "SELECT MAX(last_event_seq) FROM session_messages WHERE session_id = ?1",
+        [helmor_session_id],
+        |row| row.get::<_, Option<i64>>(0),
+    )?;
+    Ok(max.and_then(|n| u64::try_from(n).ok()))
+}
+
+/// Cold-attach gate. `false` when the desktop has any
+/// persisted row for this session (warm reattach — let the caller
+/// use `MAX(last_event_seq)` to set `since_seq`); `true` when the
+/// session has no local rows at all (cold attach — caller passes
+/// `since_seq=Some(0)` so the daemon flushes the entire journal).
+///
+/// Why a separate query from `max_event_seq_for_session`: a session
+/// can have local rows whose `last_event_seq` is all NULL (legacy /
+/// local-only rows). The MAX query reports `None` for that, which
+/// would falsely look like "cold attach" if we collapsed the two
+/// checks. The dedicated existence query distinguishes "no rows" from
+/// "rows present but no journal data".
+pub(crate) fn has_local_rows_for_session(
+    conn: &Connection,
+    helmor_session_id: &str,
+) -> Result<bool> {
+    // `EXISTS(...)` returns 0 / 1 so the row always materialises;
+    // no QueryReturnedNoRows risk.
+    let exists: i64 = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM session_messages WHERE session_id = ?1)",
+        [helmor_session_id],
+        |row| row.get(0),
+    )?;
+    Ok(exists != 0)
 }
 
 pub(super) fn persist_exit_plan_message(
@@ -327,7 +415,8 @@ mod tests {
                 role TEXT,
                 content TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                sent_at TEXT
+                sent_at TEXT,
+                last_event_seq INTEGER
             );
             "#,
         )
@@ -335,7 +424,7 @@ mod tests {
 
         let ctx = test_exchange_context();
         let message_id =
-            persist_error_message(&conn, &ctx, "gpt-5.4", "Reconnecting... 1/5").unwrap();
+            persist_error_message(&conn, &ctx, "gpt-5.4", "Reconnecting... 1/5", None).unwrap();
 
         let (role, content): (String, String) = conn
             .query_row(
@@ -364,7 +453,8 @@ mod tests {
                 role TEXT,
                 content TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                sent_at TEXT
+                sent_at TEXT,
+                last_event_seq INTEGER
             );
             "#,
         )
@@ -523,5 +613,164 @@ mod tests {
             .unwrap();
         let parsed: Value = serde_json::from_str(&content).unwrap();
         assert!(parsed.get("allowedPrompts").is_none());
+    }
+
+    /// Reattach re-pushes the daemon's full event log through a
+    /// fresh accumulator, so turns the original sender already
+    /// persisted re-surface to `persist_turn_message`. The
+    /// `ON CONFLICT(id) DO NOTHING` clause lets the second insert be
+    /// a no-op so the desktop never trips on a UNIQUE constraint.
+    #[test]
+    fn persist_turn_message_is_idempotent_on_repeat_id() {
+        let conn = Connection::open_in_memory().unwrap();
+        make_messages_table(&conn);
+        let ctx = test_exchange_context();
+
+        let turn = CollectedTurn {
+            id: "msg-shared-1".into(),
+            role: MessageRole::Assistant,
+            content_json: json!({
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "first" }],
+                },
+            })
+            .to_string(),
+        };
+
+        let (first_id, first_inserted) =
+            persist_turn_message(&conn, &ctx, &turn, "claude-opus-4", None).unwrap();
+        assert_eq!(first_id, "msg-shared-1");
+        assert!(first_inserted, "first call must report inserted=true");
+
+        // A different `content_json` under the same id reaches us when
+        // the daemon hands the same turn back through a reattach. The
+        // second insert must not panic + must not overwrite the
+        // original row (the desktop trusts the first writer). The
+        // `inserted` flag must report `false` so reattach's UI sync
+        // gate knows not to publish.
+        let same_id_diff_content = CollectedTurn {
+            id: "msg-shared-1".into(),
+            role: MessageRole::Assistant,
+            content_json: json!({
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "second" }],
+                },
+            })
+            .to_string(),
+        };
+        let (second_id, second_inserted) =
+            persist_turn_message(&conn, &ctx, &same_id_diff_content, "claude-opus-4", None)
+                .expect("second insert should succeed silently");
+        assert_eq!(second_id, "msg-shared-1");
+        assert!(
+            !second_inserted,
+            "second call must report inserted=false (ON CONFLICT DO NOTHING)",
+        );
+
+        // Only one row exists, and its content is the first write.
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_messages WHERE id = ?1",
+                ["msg-shared-1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        let stored: String = conn
+            .query_row(
+                "SELECT content FROM session_messages WHERE id = ?1",
+                ["msg-shared-1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(stored.contains("first"));
+        assert!(!stored.contains("second"));
+    }
+
+    fn insert_seq_row(conn: &Connection, id: &str, session_id: &str, seq: Option<i64>) {
+        conn.execute(
+            r#"
+            INSERT INTO session_messages (id, session_id, role, content, last_event_seq)
+            VALUES (?1, ?2, 'assistant', '{}', ?3)
+            "#,
+            params![id, session_id, seq],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn max_event_seq_for_session_returns_none_when_no_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        make_messages_table(&conn);
+        let max = max_event_seq_for_session(&conn, "session-empty").unwrap();
+        assert_eq!(max, None);
+    }
+
+    #[test]
+    fn max_event_seq_for_session_returns_none_when_all_rows_null() {
+        // Legacy rows (pre-24q-2) and local-only sessions both keep
+        // `last_event_seq` NULL; the helper must collapse that into a
+        // `None` result so the caller passes `since_seq=None`.
+        let conn = Connection::open_in_memory().unwrap();
+        make_messages_table(&conn);
+        insert_seq_row(&conn, "row-a", "session-1", None);
+        insert_seq_row(&conn, "row-b", "session-1", None);
+        let max = max_event_seq_for_session(&conn, "session-1").unwrap();
+        assert_eq!(max, None);
+    }
+
+    #[test]
+    fn has_local_rows_for_session_distinguishes_empty_vs_legacy_rows() {
+        // Cold-attach gate. Legacy rows (last_event_seq
+        // NULL) MUST register as "has local rows" so the caller
+        // doesn't ask the daemon to flush a journal on top of the
+        // local-only content — otherwise we'd double-insert turns
+        // the local sidecar already persisted.
+        let conn = Connection::open_in_memory().unwrap();
+        make_messages_table(&conn);
+        // Empty session — cold.
+        assert!(!has_local_rows_for_session(&conn, "session-empty").unwrap());
+
+        // Legacy row (NULL seq) — still counts as "has rows".
+        insert_seq_row(&conn, "row-1", "session-legacy", None);
+        assert!(has_local_rows_for_session(&conn, "session-legacy").unwrap());
+
+        // Modern row — counts.
+        insert_seq_row(&conn, "row-2", "session-modern", Some(5));
+        assert!(has_local_rows_for_session(&conn, "session-modern").unwrap());
+
+        // Sibling session must not leak.
+        assert!(!has_local_rows_for_session(&conn, "session-other").unwrap());
+    }
+
+    #[test]
+    fn max_event_seq_for_session_picks_high_water_mark_per_session() {
+        // Only rows matching the session_id contribute; NULLs are
+        // skipped by MAX. The result is the highest non-NULL value
+        // for that session.
+        let conn = Connection::open_in_memory().unwrap();
+        make_messages_table(&conn);
+        insert_seq_row(&conn, "row-1", "session-1", Some(10));
+        insert_seq_row(&conn, "row-2", "session-1", Some(42));
+        insert_seq_row(&conn, "row-3", "session-1", None);
+        // Sibling session — different high-water-mark; must not leak.
+        insert_seq_row(&conn, "row-4", "session-2", Some(99));
+
+        assert_eq!(
+            max_event_seq_for_session(&conn, "session-1").unwrap(),
+            Some(42)
+        );
+        assert_eq!(
+            max_event_seq_for_session(&conn, "session-2").unwrap(),
+            Some(99)
+        );
+        assert_eq!(
+            max_event_seq_for_session(&conn, "session-other").unwrap(),
+            None
+        );
     }
 }

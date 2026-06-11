@@ -1,5 +1,6 @@
 ---
 source: tests/stream_bridge_elicitation.rs
+assertion_line: 164
 expression: snapshot
 ---
 line_count: 3

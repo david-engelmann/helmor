@@ -76,7 +76,9 @@ import {
 	AgentProxyPanel,
 	ClaudeCustomProvidersPanel,
 } from "./panels/model-providers";
+import { RemoteServersPanel } from "./panels/remote-servers";
 import { RepositorySettingsPanel } from "./panels/repository-settings";
+import { RuntimeDebugPanel } from "./panels/runtime-debug";
 import { TriagePanel } from "./panels/triage";
 
 const FALLBACK_EFFORT_LEVELS = ["low", "medium", "high"];
@@ -96,6 +98,8 @@ import type { ContextProviderTab, SettingsSection } from "./types";
 const SECTION_LABEL_OVERRIDES: Partial<Record<SettingsSection, string>> = {
 	account: "Accounts",
 	inbox: "Contexts",
+	"remote-servers": "Remote Servers",
+	"runtime-debug": "Runtime Debug",
 };
 
 /// Optional muted-caption next to the title in the dialog header.
@@ -185,7 +189,17 @@ export const SettingsDialog = memo(function SettingsDialog({
 		"appearance",
 		"model",
 		"shortcuts",
+		// Track B: production-visible remote-servers surface. Lives
+		// next to the dev-only "Runtime Debug" panel — both ship; the
+		// production panel is the guided / minimal surface, the debug
+		// panel is the deep-knobs surface for operators.
+		"remote-servers",
 		...(conductorEnabled ? (["import"] as const) : []),
+		// Dev-only deep-knobs companion to the production "remote-servers"
+		// panel above — sits next to it so operators debugging a remote
+		// runtime find both surfaces together. `developer` itself lives at
+		// the bottom of the fixed group (see below).
+		...(isDev ? (["runtime-debug"] as const) : []),
 		"account",
 		"inbox",
 		"experimental",
@@ -607,6 +621,10 @@ export const SettingsDialog = memo(function SettingsDialog({
 							{activeSection === "import" && <ConductorImportPanel />}
 
 							{activeSection === "developer" && <DevToolsPanel />}
+
+							{activeSection === "remote-servers" && <RemoteServersPanel />}
+
+							{activeSection === "runtime-debug" && <RuntimeDebugPanel />}
 
 							{activeSection === "account" && (
 								<AccountPanel repositories={repositories} />

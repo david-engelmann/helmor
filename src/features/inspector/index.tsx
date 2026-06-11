@@ -82,6 +82,13 @@ type WorkspaceInspectorSidebarProps = {
 	workspaceRemote?: string | null;
 	workspaceRemoteUrl?: string | null;
 	workspaceState?: string | null;
+	/**
+	 * Name of the bound remote runtime (NULL / `"local"`
+	 * means use the local runtime). Surfaced in the
+	 * "permanently delete" toast so the operator knows which host's
+	 * workspace they're nuking.
+	 */
+	workspaceRuntimeName?: string | null;
 	/** Timestamp from `WorkspaceDetail.setupCompletedAt`. Null when setup
 	 * was never run (or skipped); drives the Setup tab placeholder copy
 	 * and the "default to Run tab" behaviour after restart. */
@@ -131,6 +138,7 @@ export function WorkspaceInspectorSidebar({
 	workspaceRemote,
 	workspaceRemoteUrl,
 	workspaceState,
+	workspaceRuntimeName,
 	workspaceSetupCompletedAt,
 	workspaceActiveRunActionId,
 	repoId,
@@ -318,9 +326,9 @@ export function WorkspaceInspectorSidebar({
 
 	const handleAddTerminal = useCallback(() => {
 		if (!repoId || !workspaceId) return;
-		const next = createTerminal(repoId, workspaceId);
+		const next = createTerminal(repoId, workspaceId, workspaceRootPath ?? null);
 		if (next) setActiveTab(next.id);
-	}, [repoId, workspaceId, setActiveTab]);
+	}, [repoId, workspaceId, workspaceRootPath, setActiveTab]);
 
 	const handleToggleTerminalHoverZoom = useCallback(
 		(instanceId: string, disabled: boolean) => {
@@ -535,6 +543,7 @@ export function WorkspaceInspectorSidebar({
 				workspaceBranch={workspaceBranch ?? null}
 				workspaceRemoteUrl={workspaceRemoteUrl ?? null}
 				workspaceTargetBranch={workspaceTargetBranch ?? null}
+				workspaceRuntimeName={workspaceRuntimeName ?? null}
 				changes={changes}
 				editorMode={editorMode}
 				activeEditor={activeEditor}
@@ -600,6 +609,7 @@ export function WorkspaceInspectorSidebar({
 				<SetupTab
 					repoId={repoId ?? null}
 					workspaceId={workspaceId ?? null}
+					workspaceRootPath={workspaceRootPath ?? null}
 					setupScript={repoScripts?.setupScript ?? null}
 					setupCompletedAt={workspaceSetupCompletedAt ?? null}
 					isActive={activeTab === "setup"}
@@ -608,6 +618,7 @@ export function WorkspaceInspectorSidebar({
 				<RunTab
 					repoId={repoId ?? null}
 					workspaceId={workspaceId ?? null}
+					workspaceRootPath={workspaceRootPath ?? null}
 					activeRunActionId={activeRunActionId}
 					activeRunActionName={activeAction?.name ?? null}
 					runScript={activeAction?.command ?? null}
@@ -623,6 +634,7 @@ export function WorkspaceInspectorSidebar({
 						key={instance.id}
 						repoId={repoId ?? null}
 						workspaceId={workspaceId ?? null}
+						runtimeName={workspaceRuntimeName ?? null}
 						instance={instance}
 						isActive={activeTab === instance.id}
 					/>

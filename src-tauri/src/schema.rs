@@ -717,6 +717,43 @@ fn run_migrations(connection: &Connection) -> Result<()> {
             .context("Failed to add workspaces.port_count column")?;
     }
 
+    // A workspace can now be pinned to a registered remote runtime.
+    // `NULL` means "use the local runtime" — the historical default
+    // and what every existing row carries until the operator
+    // explicitly binds elsewhere. New rows can opt in at create time
+    // via the Add Workspace dialog.
+    //
+    // The column is nullable rather than `DEFAULT 'local'` so the
+    // distinction "no preference (legacy)" vs "explicitly local"
+    // stays representable. The resolver in `resolve_runtime_for_call`
+    // treats NULL and "local" identically, so this only matters for
+    // future write paths.
+    if has_table(connection, "workspaces") && !has_column(connection, "workspaces", "runtime_name")
+    {
+        connection
+            .execute_batch("ALTER TABLE workspaces ADD COLUMN runtime_name TEXT")
+            .context("Failed to add workspaces.runtime_name column")?;
+    }
+
+    // Migration: per-row event-seq cursor for the daemon's event
+    // journal. The streaming pipeline writes the seq of the
+    // daemon-side event that produced this row; the reattach call
+    // queries `MAX(last_event_seq)` for the session and passes it
+    // back to the daemon as `since_seq` so a reconnect only replays
+    // events the desktop hasn't already persisted.
+    //
+    // Nullable: rows written before this migration (and any
+    // non-remote-runner write path) leave it NULL. The MAX aggregate
+    // skips NULLs, so a session with mixed legacy + new rows still
+    // computes the correct cursor.
+    if has_table(connection, "session_messages")
+        && !has_column(connection, "session_messages", "last_event_seq")
+    {
+        connection
+            .execute_batch("ALTER TABLE session_messages ADD COLUMN last_event_seq INTEGER")
+            .context("Failed to add session_messages.last_event_seq column")?;
+    }
+
     // 'from_branch' = fork a new branch; 'use_branch' = attach as-is.
     if has_table(connection, "workspaces") && !has_column(connection, "workspaces", "branch_intent")
     {
@@ -1017,7 +1054,13 @@ CREATE TABLE IF NOT EXISTS session_messages (
     content TEXT,
     sent_at TEXT,
     is_ai_priming INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    -- Seq of the daemon-side journal event that
+    -- produced this row. NULL on non-remote-runner writes; the
+    -- reattach call passes MAX(last_event_seq) per session to the
+    -- daemon as `since_seq` so a reconnect replays only what was
+    -- missed.
+    last_event_seq INTEGER
 );
 
 -- Connected Slack workspaces (one row per workspace the user has
@@ -1804,6 +1847,61 @@ mod tests {
         assert_eq!(
             stored.as_deref(),
             Some(r#"{"totalTokens":12,"maxTokens":100}"#)
+        );
+    }
+
+    // ── workspaces.runtime_name ─────────────────────────────────
+
+    #[test]
+    fn workspaces_runtime_name_present_on_fresh_install() {
+        let (connection, _dir) = open_test_db();
+        ensure_schema(&connection).unwrap();
+        assert!(column_exists(&connection, "workspaces", "runtime_name"));
+    }
+
+    #[test]
+    fn workspaces_runtime_name_added_to_legacy_and_idempotent() {
+        let (connection, _dir) = open_test_db();
+        create_legacy_schema(&connection);
+        assert!(!column_exists(&connection, "workspaces", "runtime_name"));
+
+        run_migrations(&connection).unwrap();
+        assert!(column_exists(&connection, "workspaces", "runtime_name"));
+
+        // Re-running migrations on an already-migrated DB must not
+        // error or duplicate the column.
+        run_migrations(&connection).unwrap();
+        assert!(column_exists(&connection, "workspaces", "runtime_name"));
+    }
+
+    #[test]
+    fn workspaces_runtime_name_defaults_to_null_for_existing_rows() {
+        // A legacy row predates the column; after migration it must
+        // carry NULL (= "use the local runtime") rather than some
+        // other sentinel. Subsequent reads should see NULL.
+        let (connection, _dir) = open_test_db();
+        create_legacy_schema(&connection);
+        // Insert against the legacy column set — `directory_name`
+        // isn't on the legacy table; only `id` + `repository_id`
+        // are. The migration adds the rest.
+        connection
+            .execute(
+                "INSERT INTO workspaces (id, repository_id) VALUES ('legacy-ws', 'repo-1')",
+                [],
+            )
+            .unwrap();
+        run_migrations(&connection).unwrap();
+
+        let value: Option<String> = connection
+            .query_row(
+                "SELECT runtime_name FROM workspaces WHERE id = 'legacy-ws'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            value.is_none(),
+            "legacy row should carry NULL runtime_name, got {value:?}"
         );
     }
 

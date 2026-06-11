@@ -938,11 +938,17 @@ export function workspaceChangesQueryOptions(
  * popup never opens (no UI breakage). Cached aggressively because the
  * walk is bounded but not free, and the file set rarely changes within
  * a single composer session.
+ *
+ * `workspaceId` is threaded into the IPC call so a workspace bound to a
+ * remote runtime fans the walk out over the wire.
  */
-export function workspaceFilesQueryOptions(workspaceRootPath: string) {
+export function workspaceFilesQueryOptions(
+	workspaceRootPath: string,
+	workspaceId?: string,
+) {
 	return queryOptions({
 		queryKey: helmorQueryKeys.workspaceFiles(workspaceRootPath),
-		queryFn: () => listWorkspaceFiles(workspaceRootPath),
+		queryFn: () => listWorkspaceFiles(workspaceRootPath, workspaceId),
 		staleTime: 60_000,
 		gcTime: DEFAULT_GC_TIME,
 		retry: 0,

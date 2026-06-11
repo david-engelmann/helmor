@@ -147,6 +147,7 @@ pub fn prepare_workspace_from_repo_impl(
     source_branch: Option<&str>,
     branch_intent: WorkspaceBranchIntent,
     initial_status: WorkspaceStatus,
+    runtime_name: Option<&str>,
     seed_session_id: Option<&str>,
 ) -> Result<PrepareWorkspaceResponse> {
     let repository = repos::load_repository_by_id(repo_id)?
@@ -224,6 +225,7 @@ pub fn prepare_workspace_from_repo_impl(
         branch_intent,
         initial_status,
         &timestamp,
+        runtime_name,
     )?;
 
     // `load_repo_scripts` is the single truth source. The worktree
@@ -308,6 +310,7 @@ pub fn prepare_local_workspace_impl(
     repo_id: &str,
     source_branch: Option<&str>,
     initial_status: WorkspaceStatus,
+    runtime_name: Option<&str>,
     seed_session_id: Option<&str>,
 ) -> Result<PrepareWorkspaceResponse> {
     let repository = repos::load_repository_by_id(repo_id)?
@@ -363,6 +366,7 @@ pub fn prepare_local_workspace_impl(
         WorkspaceBranchIntent::UseBranch,
         initial_status,
         &timestamp,
+        runtime_name,
     )?;
 
     if target_branch != current_branch {
@@ -869,11 +873,18 @@ pub fn move_local_workspace_to_worktree_impl(
 /// the old-shape response. Used by CLI, MCP, and `add_repository_from_local_path`
 /// — all non-UI callers that do not benefit from the prepare/finalize split.
 pub fn create_workspace_from_repo_impl(repo_id: &str) -> Result<CreateWorkspaceResponse> {
+    // Non-UI callers (CLI, MCP, add-repo bulk import) never bind a
+    // remote runtime or pre-allocate a session — they always create
+    // local workspaces with a backend-minted session id. The Tauri
+    // command path in `workspace_commands::create_workspace_from_repo`
+    // is what carries `runtime_name` + `seed_session_id` through from
+    // the Add Workspace dialog.
     let prepared = prepare_workspace_from_repo_impl(
         repo_id,
         None,
         WorkspaceBranchIntent::FromBranch,
         WorkspaceStatus::default(),
+        None,
         None,
     )?;
     let finalized = finalize_workspace_from_repo_impl(&prepared.workspace_id)?;

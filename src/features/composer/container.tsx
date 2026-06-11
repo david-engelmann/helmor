@@ -22,6 +22,7 @@ import type {
 } from "@/lib/api";
 import {
 	createSession,
+	listRemoteRuntimes,
 	mutateCodexGoal,
 	saveAutoCloseActionKinds,
 	setWorkspaceLinkedDirectories,
@@ -310,6 +311,17 @@ export const WorkspaceComposerContainer = memo(
 			...workspaceDetailQueryOptions(displayedWorkspaceId ?? "__none__"),
 			enabled: Boolean(displayedWorkspaceId),
 		});
+		// Shared query key with `RemoteConnectionBanner` and the App's
+		// runtime picker — TanStack dedupes so we don't fire a third
+		// network call. The fast refetch interval matches the banner's;
+		// when the runtime drops we want Send disabled and the banner
+		// visible at the same tick.
+		const remoteRuntimesQuery = useQuery({
+			queryKey: ["remote-runtimes"],
+			queryFn: listRemoteRuntimes,
+			refetchInterval: 10_000,
+			staleTime: 5_000,
+		});
 		const sessionsQuery = useQuery({
 			...workspaceSessionsQueryOptions(displayedWorkspaceId ?? "__none__"),
 			enabled: Boolean(displayedWorkspaceId),
@@ -551,6 +563,28 @@ export const WorkspaceComposerContainer = memo(
 				workspaceDetailQuery.data?.state === "archived");
 		const composerAwaitingFinalize =
 			workspaceDetailQuery.data?.state === "initializing";
+
+		// Block Send when the workspace's bound remote runtime is
+		// degraded / disconnected. The desktop's connection banner is
+		// already up at that point — letting the user hit Send anyway
+		// would race against the SSH socket and the user's message
+		// can fail to materialize entirely (the stream loop bails
+		// before the optimistic insert). Phase 1.3 walkthrough,
+		// scenario A. `null` / "local" runtime bindings stay live —
+		// the local PTY never goes degraded.
+		const boundRuntimeName = workspaceDetailQuery.data?.runtimeName ?? null;
+		const runtimeDegraded = useMemo(() => {
+			if (!boundRuntimeName || boundRuntimeName === "local") return false;
+			const entry = remoteRuntimesQuery.data?.find(
+				(r) => r.name === boundRuntimeName,
+			);
+			// Unknown runtime name (binding to a runtime that's not
+			// currently registered) — could be a stale binding or the
+			// runtimes list not loaded yet. Don't block on speculation;
+			// the banner surfaces the real issue separately.
+			if (!entry) return false;
+			return entry.state.type !== "connected";
+		}, [boundRuntimeName, remoteRuntimesQuery.data]);
 
 		// Auto-close opt-in state comes from settings: `auto_close_action_kinds`
 		// is the persistent list of action kinds the user has enabled. A given
@@ -920,6 +954,53 @@ export const WorkspaceComposerContainer = memo(
 			workingDirectory,
 		]);
 
+		// Debug-only test hook: exposes the currently-mounted composer's
+		// submit handler on `window.__helmorTest` so an external driver
+		// (an e2e test runner, a recording tool, the dev-tools console)
+		// can fire a chat send through the EXACT code path the Send
+		// button uses — including the codex `/goal` interception, the
+		// model/permission/effort/fast-mode capture, and the streaming
+		// hook subscription.
+		//
+		// Why we need this: Lexical's input pipeline doesn't accept
+		// synthetic DOM events (no keystroke replay, no paste-event
+		// shim) and `setEditorState` doesn't update the React send-
+		// value. The choice is either solve that (hostile) or hand a
+		// surface like this to the driver. This is what every other
+		// frontend with an end-to-end recorder does — and we gate it on
+		// `import.meta.env.DEV` so the production bundle never even
+		// mentions `__helmorTest`.
+		useEffect(() => {
+			if (!import.meta.env.DEV) return;
+			if (!displayedSessionId) return;
+			const handler = (prompt: string): Promise<void> => {
+				if (typeof prompt !== "string" || !prompt.trim()) {
+					return Promise.reject(
+						new Error(
+							"__helmorTest.sendPrompt: prompt must be a non-empty string",
+						),
+					);
+				}
+				handleComposerSubmit(prompt, [], [], []);
+				return Promise.resolve();
+			};
+			type TestHook = {
+				sendPrompt?: (p: string) => Promise<void>;
+				sessionId?: string;
+			};
+			const w = globalThis as unknown as { __helmorTest?: TestHook };
+			const bag: TestHook = w.__helmorTest ?? {};
+			w.__helmorTest = bag;
+			bag.sendPrompt = handler;
+			bag.sessionId = displayedSessionId;
+			return () => {
+				if (bag.sendPrompt === handler) {
+					bag.sendPrompt = undefined;
+					bag.sessionId = undefined;
+				}
+			};
+		}, [displayedSessionId, handleComposerSubmit]);
+
 		const handleSelectModelInner = useCallback(
 			(modelId: string) => {
 				void handleModelSelect(modelId);
@@ -1093,7 +1174,10 @@ export const WorkspaceComposerContainer = memo(
 						onSubmit={handleComposerSubmit}
 						disabled={composerUnavailable}
 						submitDisabled={
-							disabled || loadingConversationContext || composerAwaitingFinalize
+							disabled ||
+							loadingConversationContext ||
+							composerAwaitingFinalize ||
+							runtimeDegraded
 						}
 						onStop={onStop}
 						sending={sending}

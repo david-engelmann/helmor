@@ -10,6 +10,8 @@ export type SettingsSection =
 	| "experimental"
 	| "import"
 	| "developer"
+	| "remote-servers"
+	| "runtime-debug"
 	| "account"
 	| "inbox"
 	| `repo:${string}`;

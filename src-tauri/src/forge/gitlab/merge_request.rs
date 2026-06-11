@@ -25,7 +25,7 @@ pub(super) fn find_workspace_mr(context: &GitlabContext) -> Result<Option<Gitlab
         encode_path_component(&context.full_path),
         encode_query_value(&context.branch),
     );
-    let output = glab_api(&context.remote.host, [endpoint.as_str()])?;
+    let output = glab_api(&context.runner, &context.remote.host, [endpoint.as_str()])?;
     if !output.success {
         let detail = command_detail(&output);
         if looks_like_auth_error(&detail) {
@@ -53,7 +53,7 @@ fn fetch_mr_detail(context: &GitlabContext, iid: i64) -> Result<GitlabMergeReque
         "projects/{}/merge_requests/{iid}",
         encode_path_component(&context.full_path),
     );
-    let output = glab_api(&context.remote.host, [endpoint.as_str()])?;
+    let output = glab_api(&context.runner, &context.remote.host, [endpoint.as_str()])?;
     if !output.success {
         let detail = command_detail(&output);
         if looks_like_auth_error(&detail) {
@@ -125,7 +125,7 @@ impl SquashChoice {
 /// user on a project-info lookup.
 pub(super) fn determine_squash_choice(context: &GitlabContext) -> SquashChoice {
     let endpoint = format!("projects/{}", encode_path_component(&context.full_path));
-    let output = match glab_api(&context.remote.host, [endpoint.as_str()]) {
+    let output = match glab_api(&context.runner, &context.remote.host, [endpoint.as_str()]) {
         Ok(output) => output,
         Err(error) => {
             tracing::warn!(

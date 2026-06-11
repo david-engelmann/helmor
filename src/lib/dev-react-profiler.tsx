@@ -3,8 +3,8 @@
  *
  * Wraps the per-render data that React's <Profiler> emits into a long-lived
  * in-memory summary keyed by Profiler `id`. The summary is the source of
- * truth for the Phase 1 bottleneck report and for ad-hoc inspection during
- * developer sessions.
+ * truth for bottleneck reports and for ad-hoc inspection during developer
+ * sessions.
  *
  * Gating: enabled iff `?profile=1` is in the URL. Uses its own flag (rather
  * than `perfHud` or `perfMarks`) so the three perf overlays can be turned on

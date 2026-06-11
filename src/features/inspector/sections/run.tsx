@@ -28,6 +28,7 @@ import {
 	attach,
 	cleanupScript,
 	detach,
+	getScriptState,
 	resizeScript,
 	type ScriptStatus,
 	startScript,
@@ -39,6 +40,11 @@ import {
 type RunTabProps = {
 	repoId: string | null;
 	workspaceId: string | null;
+	/** Local-side worktree path; threaded through to the script-store so a
+	 *  workspace bound to a remote runtime can route the run command through
+	 *  the daemon's `terminal.open` (with `command` set). Null / omitted
+	 *  degrades the dispatch to local. */
+	workspaceRootPath?: string | null;
 	/**
 	 * `RunAction.id` for the action whose lifecycle this panel mirrors. `null`
 	 * when no action is selected yet (e.g. fresh repo with zero configured
@@ -169,6 +175,7 @@ export function OpenDevServerButton({ urls }: { urls: string[] }) {
 export function RunTab({
 	repoId,
 	workspaceId,
+	workspaceRootPath,
 	activeRunActionId,
 	activeRunActionName,
 	runScript,
@@ -203,12 +210,47 @@ export function RunTab({
 			return;
 		}
 
+		// Lazy-mount latch (mirrors `setup.tsx`'s `needsLazyMount`).
+		// When attach() runs before any entry exists — and then chunks
+		// arrive before xterm mounts (the common case for a remote
+		// script that exits in <16 ms once `forge.exec` returns) —
+		// the first non-idle status change flips `hasRun` true, which
+		// mounts xterm, and the requestAnimationFrame replay walks
+		// `entry.chunks` from the store into the freshly-mounted
+		// terminal. Without this, the chunks land in
+		// `listener.onChunk` while `termRef.current` is still null
+		// and silently disappear; the panel keeps showing the empty-
+		// state placeholder even though the script ran.
+		let needsLazyMount = true;
+
 		const existing = attach(
 			workspaceId,
 			"run",
 			{
 				onChunk: (data) => termRef.current?.write(data),
-				onStatusChange: setStatus,
+				onStatusChange: (s) => {
+					setStatus(s);
+					if (s !== "idle" && needsLazyMount) {
+						needsLazyMount = false;
+						setHasRun(true);
+						// Replay every chunk buffered before TerminalOutput
+						// mounted so the panel reflects the live entry
+						// even when the script exited before React
+						// flushed the `hasRun(true)` re-render.
+						requestAnimationFrame(() => {
+							const entry = getScriptState(
+								workspaceId,
+								"run",
+								activeRunActionId,
+							);
+							const t = termRef.current;
+							if (!entry || !t) return;
+							t.clear();
+							if (entry.truncated) t.write(TRUNCATION_NOTICE);
+							for (const chunk of entry.chunks) t.write(chunk);
+						});
+					}
+				},
 				onStoppingChange: setStopping,
 				onUrlsChange: (urls) => onUrlsChange?.(urls),
 				// When a fresh run is triggered externally (e.g. Cmd+R while
@@ -224,6 +266,7 @@ export function RunTab({
 		);
 
 		if (existing) {
+			needsLazyMount = false;
 			setHasRun(true);
 			setStatus(existing.status);
 			setStopping(existing.stopping);
@@ -255,8 +298,16 @@ export function RunTab({
 		termRef.current?.clear();
 		setStatus("running");
 		setHasRun(true);
-		startScript(repoId, "run", workspaceId, activeRunActionId);
-	}, [repoId, workspaceId, activeRunActionId]);
+		startScript(
+			repoId,
+			"run",
+			workspaceId,
+			activeRunActionId,
+			runScript
+				? { command: runScript, workspaceRootPath: workspaceRootPath ?? null }
+				: null,
+		);
+	}, [repoId, workspaceId, activeRunActionId, runScript, workspaceRootPath]);
 
 	const handleStop = useCallback(() => {
 		if (!repoId || !workspaceId || !activeRunActionId) return;
@@ -272,8 +323,15 @@ export function RunTab({
 		termRef.current?.clear();
 		setStatus("running");
 		setHasRun(true);
-		cleanupScript(repoId, workspaceId, activeRunActionId);
-	}, [repoId, workspaceId, activeRunActionId]);
+		cleanupScript(
+			repoId,
+			workspaceId,
+			activeRunActionId,
+			stopCommand
+				? { command: stopCommand, workspaceRootPath: workspaceRootPath ?? null }
+				: null,
+		);
+	}, [repoId, workspaceId, activeRunActionId, stopCommand, workspaceRootPath]);
 
 	// Forward keystrokes to the PTY. The backend silently ignores writes
 	// when no script is live, so we don't gate this on status.

@@ -1,0 +1,307 @@
+name: Publish helmor-server
+
+# Cross-platform release pipeline for the remote daemon binary.
+#
+# Fired by:
+#   - Tag push of `helmor-server-v*` (e.g. `helmor-server-v0.22.1`).
+#   - Manual `workflow_dispatch` for one-off builds against a branch.
+#
+# Each matrix entry compiles `helmor-server` for one (os, arch) pair,
+# strips it, packages it into a `helmor-server-<version>-<target>.tar.gz`
+# tarball, and uploads it as a release artifact. A trailing `aggregate`
+# job collects all tarballs and produces a single `SHA256SUMS` file so
+# the auto-install path (`src-tauri/src/remote/install.rs`) can verify
+# downloads.
+#
+# `helmor-server` is a separate release from the desktop app (managed by
+# `publish.yml`) because:
+#   - The desktop bundles macOS-only; the daemon targets Linux + macOS.
+#   - Daemon releases are far more frequent (protocol bumps + RPC method
+#     additions) than desktop releases.
+#   - Operators install one daemon binary per remote host; the desktop
+#     auto-install path needs a stable per-arch URL independent of the
+#     desktop's own release cadence.
+
+on:
+  push:
+    tags:
+      - "helmor-server-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version string to stamp into the artifact name (e.g. 0.22.1)"
+        required: true
+        default: "0.0.0-dev"
+
+concurrency:
+  group: publish-helmor-server-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CI: true
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux remotes: the default deployment target. x64 covers the
+          # vast majority of cloud VMs; arm64 covers AWS Graviton + the
+          # newer "ampere" / "axion" instance families.
+          #
+          # Both Linux legs build NATIVELY on same-arch hosted runners
+          # (GitHub's `ubuntu-24.04-arm` is a native arm64 runner).
+          # We deliberately do NOT use `cross` here: the headless
+          # daemon still links the GUI `tauri` crate, so a cross build
+          # would need a full arm64 GTK/webkit sysroot — fragile and
+          # slow. Native per-arch runners match how the daemon is
+          # built + verified in the Docker E2E (tests/docker-e2e).
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            os: linux
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            os: linux
+          # macOS remotes: developer pairing flows (run agents on a
+          # workstation, edit from a laptop). darwin-arm64 first, x86
+          # secondary. WebKit is a system framework on macOS — no GTK
+          # install needed.
+          - target: aarch64-apple-darwin
+            runner: macos-15
+            os: macos
+          - target: x86_64-apple-darwin
+            runner: macos-15
+            os: macos
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ github.event.inputs.version }}"
+          else
+            # Tag form: helmor-server-v0.22.1 → 0.22.1
+            version="${GITHUB_REF_NAME#helmor-server-v}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Building helmor-server ${version} for ${{ matrix.target }}"
+
+      - name: Read pinned Rust channel from rust-toolchain.toml
+        # Pin local dev, the test workflow, and this release pipeline
+        # to the same compiler. Auto-detect via the action's heuristic
+        # didn't fire reliably on `@master` — pass the channel through
+        # explicitly so a `rust-toolchain.toml` bump is the single
+        # source of truth.
+        id: rust_channel
+        shell: bash
+        run: |
+          channel=$(awk -F '"' '/^channel/{print $2}' rust-toolchain.toml)
+          if [ -z "$channel" ]; then
+            echo "ERROR: failed to parse channel from rust-toolchain.toml" >&2
+            cat rust-toolchain.toml >&2
+            exit 1
+          fi
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # master 2026-02
+        with:
+          toolchain: ${{ steps.rust_channel.outputs.channel }}
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.0
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      - name: Install Tauri v2 Linux build deps
+        # The headless daemon links the GUI `tauri` crate
+        # transitively (Tauri's plugin/command registration uses
+        # link-time static registration the linker can't dead-strip),
+        # so the GTK/webkit DEV libs must be present at link time.
+        # Native same-arch runners → a plain apt install, no
+        # cross-sysroot juggling. macOS legs skip (WebKit is a
+        # system framework). Verified against the Docker E2E image's
+        # builder stage.
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            pkg-config
+
+      - name: Prepare daemon build
+        # Two fixes for the headless-daemon build, applied on every
+        # leg:
+        #   1. `tauri-build` validates `tauri.conf.json`'s
+        #      `resources: ../sidecar/dist/vendor/`, which is
+        #      gitignored (normally generated by the sidecar build).
+        #      Create an empty placeholder — the daemon doesn't use
+        #      bundled resources.
+        #   2. The lib's `crate-type = [staticlib, cdylib, rlib]`
+        #      makes a release build of the daemon drag in cdylib +
+        #      staticlib at opt-level 3 (LLVM whole-program), which
+        #      OOMs even on large hosts. The daemon binary only needs
+        #      the lib as `rlib`, so pin it to rlib for this build.
+        #      Transient — the CI checkout is throwaway.
+        run: |
+          set -euo pipefail
+          mkdir -p sidecar/dist/vendor
+          # Pin lib crate-type to rlib for the daemon build only.
+          sed -i.bak 's/^crate-type = \["staticlib", "cdylib", "rlib"\]/crate-type = ["rlib"]/' src-tauri/Cargo.toml
+          if ! grep -q 'crate-type = \["rlib"\]' src-tauri/Cargo.toml; then
+            echo "FATAL: crate-type pin did not apply — Cargo.toml [lib] shape changed?" >&2
+            exit 1
+          fi
+        shell: bash
+
+      - name: Build
+        working-directory: src-tauri
+        env:
+          # Same workaround as remote-server-e2e — the runner image
+          # leaks `RUSTC_WRAPPER=sccache` but `sccache` isn't on
+          # `$PATH`, so cargo blows up with `No such file or directory`.
+          RUSTC_WRAPPER: ""
+        run: cargo build --release --bin helmor-server --target ${{ matrix.target }}
+
+      - name: Smoke test binary
+        # Both Linux legs run natively now (no cross), and macOS legs
+        # are native too — so every leg can execute its own binary.
+        # Run `--version` and confirm the binary prints the expected
+        # `helmor-server <semver>\nprotocol <semver>` shape
+        # `install.rs::probe_remote_version` parses. Also proves the
+        # binary's runtime NEEDED libs resolve on the runner (the
+        # GTK libs installed above for Linux).
+        working-directory: src-tauri
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/helmor-server"
+          out=$("${bin}" --version)
+          echo "${out}"
+          # First line: helmor-server <semver>
+          # Second line: protocol <semver>
+          echo "${out}" | head -n1 | grep -E '^helmor-server [0-9]+\.[0-9]+\.[0-9]+' \
+            || { echo "smoke test: first line must be 'helmor-server <semver>'" >&2; exit 1; }
+          echo "${out}" | sed -n '2p' | grep -E '^protocol [0-9]+\.[0-9]+\.[0-9]+' \
+            || { echo "smoke test: second line must be 'protocol <semver>'" >&2; exit 1; }
+
+      - name: Stage artifact
+        id: stage
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          target="${{ matrix.target }}"
+          dist="dist/helmor-server"
+          mkdir -p "${dist}"
+          src="src-tauri/target/${target}/release/helmor-server"
+          test -x "${src}" || { echo "missing binary at ${src}"; exit 1; }
+          # Strip symbols to keep the tarball small. `strip` is purely
+          # a size optimisation — a failure (BSD strip rejecting a
+          # specific binary form, missing `strip` on the runner, etc.)
+          # shouldn't tank the whole release. Warn + continue.
+          if ! strip "${src}" 2>/dev/null; then
+            echo "warning: strip failed on ${src}; shipping un-stripped binary" >&2
+          fi
+          tarball="helmor-server-${version}-${target}.tar.gz"
+          # Tar from the parent dir so the archive layout is
+          # `helmor-server-<version>-<target>/helmor-server` — the
+          # install script's path expectation.
+          stage_dir="helmor-server-${version}-${target}"
+          mkdir -p "${dist}/${stage_dir}"
+          cp "${src}" "${dist}/${stage_dir}/helmor-server"
+          (cd "${dist}" && tar czf "${tarball}" "${stage_dir}")
+          # Per-tarball checksum file — the aggregate step concatenates
+          # these into the canonical SHA256SUMS.
+          (cd "${dist}" && shasum -a 256 "${tarball}" > "${tarball}.sha256")
+          echo "tarball_path=${dist}/${tarball}" >> "$GITHUB_OUTPUT"
+          echo "sum_path=${dist}/${tarball}.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # One artifact per matrix entry — `aggregate` downloads them
+          # all and produces the consolidated release.
+          name: helmor-server-${{ matrix.target }}
+          path: |
+            ${{ steps.stage.outputs.tarball_path }}
+            ${{ steps.stage.outputs.sum_path }}
+          if-no-files-found: error
+          retention-days: 7
+
+  aggregate:
+    name: Aggregate + Release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Only publish when we have a real tag — workflow_dispatch builds
+    # leave the artifacts attached to the workflow run for inspection
+    # but don't mint a release.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/helmor-server-v')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: helmor-server-*
+          merge-multiple: true
+
+      - name: Build consolidated SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist
+          # Expect exactly one tarball per matrix entry — anything else
+          # means a build leg silently dropped its artifact.
+          tarball_count=$(ls -1 *.tar.gz 2>/dev/null | wc -l)
+          sum_count=$(ls -1 *.tar.gz.sha256 2>/dev/null | wc -l)
+          if [ "${tarball_count}" -ne 4 ] || [ "${sum_count}" -ne 4 ]; then
+            echo "expected 4 tarballs + 4 sha files; got ${tarball_count} tarballs, ${sum_count} sums" >&2
+            ls -la
+            exit 1
+          fi
+          # One canonical SHA256SUMS file the install.rs path downloads
+          # alongside the tarball. Sorted by filename for reproducibility.
+          rm -f SHA256SUMS
+          # Each per-target .sha256 file is `<hash>  <tarball>`. Merge.
+          cat *.tar.gz.sha256 | sort > SHA256SUMS
+          # Drop the per-target intermediate files so the release only
+          # carries the tarballs + the merged SHA256SUMS.
+          rm -f *.tar.gz.sha256
+          ls -lah
+
+      - name: Create / update GitHub release
+        # Pinned by commit SHA: this step has `contents: write`, which
+        # is the most powerful permission in this workflow. Floating
+        # tags on third-party actions are a known supply-chain risk for
+        # release pipelines.
+        uses: softprops/action-gh-release@72f2c25fcb47643c292f7107632f7a47c1df5cd8 # v2.3.2
+        with:
+          # The tag is `helmor-server-v<version>`; the release name
+          # mirrors it. Body autogenerates from commits between tags.
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS

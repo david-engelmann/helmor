@@ -1,0 +1,21 @@
+{
+	"items": [
+		{
+			"text": "You can now run a workspace on a remote machine. Add a remote server in Settings, pick it as the \"Where\" target on workspace creation, or re-bind an existing workspace from the inspector.",
+			"action": {
+				"label": "Add a remote server",
+				"value": { "type": "openSettings", "section": "remote-servers" }
+			}
+		},
+		{
+			"text": "Agent chats survive reconnects. A network blip, daemon restart, or app restart now replays in-flight chat state from the daemon's journal so chat threads aren't lost to a dropped connection."
+		},
+		{
+			"text": "New diagnostics surface per-server transport state, last-roundtrip latency, install state, and tailed daemon logs. A reconnect banner appears in-app when a remote disconnects.",
+			"action": {
+				"label": "Open Servers",
+				"value": { "type": "openSettings", "section": "remote-servers" }
+			}
+		}
+	]
+}

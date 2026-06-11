@@ -1,14 +1,26 @@
 import {
+	closeRemoteTerminal,
+	listWorkspaceRuntimeBindings,
+	openRemoteTerminal,
+	resizeRemoteTerminal,
 	resizeTerminal,
 	type ScriptEvent,
 	spawnTerminal,
 	stopTerminal,
+	type TerminalEventNotification,
+	writeRemoteTerminal,
 	writeTerminalStdin,
 } from "@/lib/api";
 
 // Module-level store for Terminal tab instances. Mirrors script-store but
 // keyed per (workspace, instanceId) so multiple shells can coexist.
 // In-memory only — closing the app drops every shell.
+//
+// Routing: a terminal opened against a workspace bound to a remote runtime
+// spawns its PTY on the remote daemon (via `openRemoteTerminal`); a
+// workspace with no binding (or one pinned to `local`) keeps using the
+// host's `spawnTerminal`. The dispatch happens inside `createTerminal`
+// so callers don't have to know whether they're talking to a container.
 
 export type TerminalStatus = "running" | "exited";
 
@@ -18,6 +30,13 @@ export type TerminalInstance = {
 	 * archive) can stop the PTY without the caller threading `repoId`
 	 * separately. */
 	repoId: string;
+	/** `null` for local PTY (spawn_terminal). Non-null = remote runtime
+	 * name; reads/writes/closes route through the `*_remote_terminal`
+	 * Tauri commands and never touch the laptop. Filled in once the
+	 * async routing lookup settles — write/resize calls that fire
+	 * before then are dropped (same UX as the pre-routing local case
+	 * where the PTY hadn't yet emitted its prompt). */
+	runtimeName: string | null;
 	chunks: string[];
 	bufferedBytes: number;
 	truncated: boolean;
@@ -49,6 +68,10 @@ const MAX_CHUNK_BYTES = 2 * 1024 * 1024;
 
 export const TRUNCATION_NOTICE =
 	"\r\n\x1b[2m… earlier output truncated (buffer limit reached) …\x1b[0m\r\n";
+
+/** Default PTY geometry for fresh spawns. xterm.js re-fits on attach. */
+const DEFAULT_PTY_COLS = 80;
+const DEFAULT_PTY_ROWS = 24;
 
 /** workspaceId → ordered list of terminals (left-to-right in the sub-tab row). */
 const instancesByWorkspace = new Map<string, TerminalInstance[]>();
@@ -111,16 +134,70 @@ export function subscribeToWorkspaceList(
 	};
 }
 
+/**
+ * Resolve the routing for a workspace: which runtime to spawn against
+ * and the absolute path the runtime should treat as cwd.
+ *
+ * `null` means "local PTY" — either the workspace has no binding,
+ * is pinned to the literal `local` runtime, or the lookup blew up
+ * (treat any failure as local rather than refusing to open a shell).
+ *
+ * `workspaceRootPath` is the desktop's view of the worktree. When a
+ * binding has no explicit `remotePath` override, the same path is
+ * passed through to the remote — works for the macOS↔Linux pair where
+ * both sides happen to share a filesystem layout (vendored helmor's
+ * default in same-tree dev setups).
+ */
+async function resolveTerminalRouting(
+	workspaceId: string,
+	workspaceRootPath: string | null,
+): Promise<{ runtimeName: string; workspaceDir: string } | null> {
+	try {
+		const bindings = await listWorkspaceRuntimeBindings();
+		const binding = bindings.find((b) => b.workspaceId === workspaceId);
+		if (!binding) return null;
+		if (binding.runtimeName === "local") return null;
+		const workspaceDir =
+			binding.remotePath && binding.remotePath.trim().length > 0
+				? binding.remotePath
+				: workspaceRootPath;
+		if (!workspaceDir) return null;
+		return { runtimeName: binding.runtimeName, workspaceDir };
+	} catch {
+		// Lookup failed — fall back to local rather than crashing the
+		// inspector. The user will see a local shell instead of the
+		// remote one; that's a degraded mode, not a broken one.
+		return null;
+	}
+}
+
+/** Translate the remote event shape into the same `ScriptEvent` shape the
+ * local path already produces, so the rest of this module doesn't need to
+ * branch on routing per event. */
+function adaptRemoteEvent(event: TerminalEventNotification): ScriptEvent {
+	const inner = event.event;
+	switch (inner.kind) {
+		case "stdout":
+			return { type: "stdout", data: inner.data };
+		case "exited":
+			return { type: "exited", code: inner.code };
+		case "error":
+			return { type: "error", message: inner.message };
+	}
+}
+
 /** Spawn a new terminal; returns null when the per-workspace cap is hit. */
 export function createTerminal(
 	repoId: string,
 	workspaceId: string,
+	workspaceRootPath: string | null,
 ): TerminalInstance | null {
 	const list = instancesByWorkspace.get(workspaceId) ?? [];
 	if (list.length >= TERMINAL_INSTANCE_LIMIT) return null;
 	const instance: TerminalInstance = {
 		id: makeId(),
 		repoId,
+		runtimeName: null,
 		chunks: [],
 		bufferedBytes: 0,
 		truncated: false,
@@ -133,7 +210,7 @@ export function createTerminal(
 	emitListChange(workspaceId);
 
 	const k = listKey(workspaceId, instance.id);
-	void spawnTerminal(repoId, workspaceId, instance.id, (event: ScriptEvent) => {
+	const dispatchEvent = (event: ScriptEvent) => {
 		// Drop late events for instances that have been closed and removed.
 		const current = instancesByWorkspace
 			.get(workspaceId)
@@ -149,6 +226,8 @@ export function createTerminal(
 				listeners.get(k)?.onChunk(event.data);
 				break;
 			}
+			case "stopping":
+				break;
 			case "exited": {
 				current.status = "exited";
 				current.exitCode = event.code;
@@ -172,7 +251,9 @@ export function createTerminal(
 				break;
 			}
 		}
-	}).catch((err) => {
+	};
+
+	const handleSpawnFailure = (err: unknown) => {
 		const current = instancesByWorkspace
 			.get(workspaceId)
 			?.find((t) => t.id === instance.id);
@@ -184,7 +265,44 @@ export function createTerminal(
 		listeners.get(k)?.onChunk(msg);
 		listeners.get(k)?.onStatusChange("exited", current.exitCode);
 		emitListChange(workspaceId);
-	});
+	};
+
+	void (async () => {
+		const routing = await resolveTerminalRouting(
+			workspaceId,
+			workspaceRootPath,
+		);
+		// Re-check the instance still exists; the user could have torn
+		// it down between createTerminal returning and this routing
+		// lookup completing.
+		const stillAlive = instancesByWorkspace
+			.get(workspaceId)
+			?.some((t) => t.id === instance.id);
+		if (!stillAlive) return;
+		if (routing) {
+			instance.runtimeName = routing.runtimeName;
+			try {
+				await openRemoteTerminal(
+					routing.runtimeName,
+					instance.id,
+					routing.workspaceDir,
+					{
+						cols: DEFAULT_PTY_COLS,
+						rows: DEFAULT_PTY_ROWS,
+						onEvent: (e) => dispatchEvent(adaptRemoteEvent(e)),
+					},
+				);
+			} catch (err) {
+				handleSpawnFailure(err);
+			}
+			return;
+		}
+		try {
+			await spawnTerminal(repoId, workspaceId, instance.id, dispatchEvent);
+		} catch (err) {
+			handleSpawnFailure(err);
+		}
+	})();
 
 	return instance;
 }
@@ -210,7 +328,11 @@ export function closeTerminal(
 	// Best-effort SIGTERM; backend silently ignores if the shell already
 	// exited (e.g. user typed `exit`).
 	if (removed && removed.status === "running") {
-		void stopTerminal(repoId, workspaceId, instanceId);
+		if (removed.runtimeName) {
+			void closeRemoteTerminal(removed.runtimeName, instanceId);
+		} else {
+			void stopTerminal(repoId, workspaceId, instanceId);
+		}
 	}
 }
 
@@ -262,7 +384,20 @@ export function writeStdin(
 	instanceId: string,
 	data: string,
 ) {
-	void writeTerminalStdin(repoId, workspaceId, instanceId, data);
+	const entry = instancesByWorkspace
+		.get(workspaceId)
+		?.find((t) => t.id === instanceId);
+	// Pre-routing-lookup writes are dropped — same UX as the local case
+	// where typing before the prompt arrives is a no-op until the PTY is
+	// alive. Once the dispatch resolves the routing, the entry's
+	// runtimeName is set (or stays null for local) and subsequent
+	// keystrokes flow through the right backend.
+	if (!entry) return;
+	if (entry.runtimeName) {
+		void writeRemoteTerminal(entry.runtimeName, instanceId, data);
+	} else {
+		void writeTerminalStdin(repoId, workspaceId, instanceId, data);
+	}
 }
 
 export function resize(
@@ -272,5 +407,13 @@ export function resize(
 	cols: number,
 	rows: number,
 ) {
-	void resizeTerminal(repoId, workspaceId, instanceId, cols, rows);
+	const entry = instancesByWorkspace
+		.get(workspaceId)
+		?.find((t) => t.id === instanceId);
+	if (!entry) return;
+	if (entry.runtimeName) {
+		void resizeRemoteTerminal(entry.runtimeName, instanceId, cols, rows);
+	} else {
+		void resizeTerminal(repoId, workspaceId, instanceId, cols, rows);
+	}
 }

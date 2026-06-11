@@ -12,7 +12,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 use crate::forge::accounts::{AuthCheck, ForgeAccount, ForgeAccountBackend, RepoAccess};
-use crate::forge::command::{command_detail, run_command, run_command_with_env, CommandOutput};
+use crate::forge::command::{command_detail, run_command, CommandOutput};
 use crate::forge::types::ForgeProvider;
 
 /// Singleton handle wired into [`crate::forge::accounts::backend_for`].
@@ -94,9 +94,39 @@ pub(crate) fn token_for_user_on_host(host: &str, login: &str) -> Result<String> 
 /// Spawn `gh <args>` with `GH_TOKEN` set to `(host, login)`'s token. Caller
 /// is still responsible for adding `--hostname <host>` to `args` when the
 /// command consults gh's host config (most `gh api ...` calls do).
+///
+/// Local-only — drops the laptop's `gh` token verbatim. Workspace-
+/// scoped paths that need to route through a bound remote runtime
+/// should call [`run_cli_with_login_via_runner`] instead.
 pub(crate) fn run_cli_with_login(host: &str, login: &str, args: &[&str]) -> Result<CommandOutput> {
-    let token = token_for_user_on_host(host, login)?;
-    run_command_with_env("gh", args.iter().copied(), &[("GH_TOKEN", token.as_str())])
+    run_cli_with_login_via_runner(
+        &crate::forge::command::ForgeRunner::local(),
+        host,
+        login,
+        args,
+    )
+}
+
+/// `run_cli_with_login`, but routed through a `ForgeRunner`. When the
+/// runner is local the behaviour is byte-for-byte equivalent to the
+/// classic call (passes the laptop's `GH_TOKEN`). When the runner is
+/// bound to a non-local runtime the laptop's token is dropped — the
+/// daemon's `gh` has its own `gh auth` state, and forwarding a
+/// host-side ephemeral token would shadow it.
+pub(crate) fn run_cli_with_login_via_runner(
+    runner: &crate::forge::command::ForgeRunner,
+    host: &str,
+    login: &str,
+    args: &[&str],
+) -> Result<CommandOutput> {
+    if runner.is_local() {
+        let token = token_for_user_on_host(host, login)?;
+        return runner
+            .run_with_env("gh", args.iter().copied(), &[("GH_TOKEN", token.as_str())])
+            .with_context(|| format!("Failed to spawn `gh {}`", args.join(" ")));
+    }
+    runner
+        .run::<_, &str>("gh", args.iter().copied())
         .with_context(|| format!("Failed to spawn `gh {}`", args.join(" ")))
 }
 

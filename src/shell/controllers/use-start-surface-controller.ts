@@ -49,6 +49,15 @@ export type StartSurfaceState = {
 	startRepository: RepositoryCreateOption | null;
 	startSourceBranch: string;
 	startMode: WorkspaceMode;
+	/**
+	 * Selected runtime for the next workspace creation. `null`
+	 * (or `"local"`) means "use the local runtime"; any other value
+	 * binds the new workspace's `workspaces.runtime_name` column to a
+	 * registered remote on insert. The Where picker in the Start page
+	 * drives this; the controller forwards it to
+	 * `createWorkspaceFromStartComposer`.
+	 */
+	startRuntimeName: string | null;
 	/** Worktree mode only; backend ignores in local mode. */
 	startBranchIntent: WorkspaceBranchIntent;
 	startPendingNewBranch: string | null;
@@ -69,6 +78,8 @@ export type StartSurfaceActions = {
 	selectRepository(repository: RepositoryCreateOption): void;
 	selectSourceBranch(branch: string): void;
 	selectMode(mode: WorkspaceMode): void;
+	/** Pick a registered runtime (or `null` for local). */
+	selectRuntime(runtimeName: string | null): void;
 	selectBranchIntent(intent: WorkspaceBranchIntent): void;
 	stashPendingNewBranch(branch: string): void;
 	refetchBranches(): void;
@@ -140,6 +151,14 @@ export function useStartSurfaceController(
 	>(null);
 	const [startPendingLinkedDirectories, setStartPendingLinkedDirectories] =
 		useState<readonly string[]>(EMPTY_STRING_LIST);
+	// Which registered runtime the next-created workspace
+	// should bind to. `null` = local (the historical default); any
+	// other value names a registry entry. The Where picker in
+	// `WorkspaceStartPage` reads + writes this via `selectRuntime`.
+	// Kept as ephemeral local state rather than a per-repo setting —
+	// the operator typically wants the chip to reset between create
+	// flows rather than sticky-remember per repo.
+	const [startRuntimeName, setStartRuntimeName] = useState<string | null>(null);
 	// One-shot mode override set by the `Cmd+N` / `Cmd+Shift+N` shortcuts
 	// (carried via the `open-new-workspace` event's `mode` payload). Wins
 	// over the persisted preference for the lifetime of the current visit
@@ -352,6 +371,19 @@ export function useStartSurfaceController(
 		[appSettings.startSurfacePreferences, startRepository, updateSettings],
 	);
 
+	const selectRuntime = useCallback((runtimeName: string | null) => {
+		// `"local"` and `""` both collapse to null so the
+		// controller's state stays canonical (null = local) and
+		// downstream code can rely on `!== null` to detect a remote pin.
+		const normalised =
+			runtimeName === null ||
+			runtimeName.trim() === "" ||
+			runtimeName === "local"
+				? null
+				: runtimeName;
+		setStartRuntimeName(normalised);
+	}, []);
+
 	const selectBranchIntent = useCallback(
 		(intent: WorkspaceBranchIntent) => {
 			if (!startRepository) return;
@@ -475,6 +507,7 @@ export function useStartSurfaceController(
 					repoId: startRepository?.id ?? "",
 					sourceBranch: startMode === "chat" ? "" : startSourceBranch,
 					mode: startMode,
+					runtimeName: startRuntimeName,
 					// Only worktree mode honors branchIntent.
 					branchIntent:
 						startMode === "worktree" ? startBranchIntent : undefined,
@@ -624,6 +657,7 @@ export function useStartSurfaceController(
 			startPendingLinkedDirectories,
 			startPendingNewBranch,
 			startRepository?.id,
+			startRuntimeName,
 			startSourceBranch,
 		],
 	);
@@ -659,6 +693,7 @@ export function useStartSurfaceController(
 		selectRepository,
 		selectSourceBranch,
 		selectMode,
+		selectRuntime,
 		selectBranchIntent,
 		stashPendingNewBranch,
 		refetchBranches,
@@ -677,6 +712,7 @@ export function useStartSurfaceController(
 			startRepository,
 			startSourceBranch,
 			startMode,
+			startRuntimeName,
 			startBranchIntent,
 			startPendingNewBranch,
 			startInboxProviderTab,
@@ -699,6 +735,7 @@ export function useStartSurfaceController(
 			startInboxStateFilterBySource,
 			startLinkedDirectoriesController,
 			startMode,
+			startRuntimeName,
 			startPendingNewBranch,
 			startRepository,
 			startRepositoryId,

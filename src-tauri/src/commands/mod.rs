@@ -5,6 +5,8 @@ pub(crate) mod editors;
 pub(crate) mod feedback_commands;
 pub(crate) mod forge_commands;
 pub(crate) mod local_llm_commands;
+pub(crate) mod remote_commands;
+pub(crate) mod remote_port_forward;
 pub(crate) mod repository_commands;
 pub(crate) mod script_commands;
 pub(crate) mod session_commands;
@@ -16,6 +18,7 @@ pub(crate) mod triage_commands;
 pub(crate) mod triage_lark_cli_commands;
 pub(crate) mod updater_commands;
 pub(crate) mod workspace_commands;
+pub(crate) mod workspace_watch;
 
 pub use system_commands::DataInfo;
 

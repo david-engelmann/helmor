@@ -86,9 +86,22 @@ export default defineConfig(async () => ({
 		// GitHub Actions macos-latest runs ~50x slower than local for the
 		// same spec (transform + import easily consume tens of seconds
 		// before the first test runs). waitFor-heavy tests in the nav +
-		// app-shortcuts suites hit microtask ordering edges under that
-		// load. Retry twice in CI so a single scheduling hiccup does not
-		// fail the whole run; local dev stays strict.
+		// app-shortcuts suites hit microtask ordering edges under both
+		// CI's slow scheduling and local parallel-worker CPU contention.
+		// Three complementary defenses:
+		//   1. Raise the per-test timeout from vitest's 5 s default to
+		//      15 s — the affected tests complete in well under 1 s in
+		//      isolation, so 15 s only matters when the worker pool is
+		//      saturated. A real perf regression would still time out.
+		//   2. Raise the hook timeout from vitest's 10 s default to
+		//      30 s — perf suites do a dynamic `import("@/features/
+		//      panel")` in `beforeAll`, and the import graph is heavy
+		//      enough to exceed 10 s under contention. Generous here
+		//      because the import is one-shot per file.
+		//   3. Retry twice in CI so a single scheduling hiccup does not
+		//      fail the whole run; local dev stays strict on retry.
+		testTimeout: 15_000,
+		hookTimeout: 30_000,
 		retry: process.env.CI ? 2 : 0,
 		// Sidecar tests are written for `bun:test`, not vitest. Exclude them
 		// so `bun run test:frontend` doesn't trip on `import ... from "bun:test"`.

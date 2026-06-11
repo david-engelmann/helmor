@@ -46,8 +46,11 @@ use self::pipeline::{
 };
 use self::review::load_review_decision;
 
-pub(super) fn lookup_workspace_mr(workspace_id: &str) -> Result<Option<ChangeRequestInfo>> {
-    let context = match load_gitlab_context(workspace_id)? {
+pub(super) fn lookup_workspace_mr(
+    workspace_id: &str,
+    runner: crate::forge::command::ForgeRunner,
+) -> Result<Option<ChangeRequestInfo>> {
+    let context = match load_gitlab_context(workspace_id, runner)? {
         GitlabResolution::Ready(ctx) if ctx.published => ctx,
         // Lookup paths degrade non-Ready/unpublished to "no MR" — the
         // primary auth surface is the action-status path.
@@ -73,8 +76,11 @@ pub(super) fn lookup_workspace_mr(workspace_id: &str) -> Result<Option<ChangeReq
     Ok(Some(mr_info(&mr)))
 }
 
-pub(super) fn lookup_workspace_mr_action_status(workspace_id: &str) -> Result<ForgeActionStatus> {
-    let context = match load_gitlab_context(workspace_id)? {
+pub(super) fn lookup_workspace_mr_action_status(
+    workspace_id: &str,
+    runner: crate::forge::command::ForgeRunner,
+) -> Result<ForgeActionStatus> {
+    let context = match load_gitlab_context(workspace_id, runner)? {
         GitlabResolution::Ready(ctx) => ctx,
         GitlabResolution::Initializing => return Ok(ForgeActionStatus::no_change_request()),
         GitlabResolution::Unavailable(message) => {
@@ -204,8 +210,9 @@ pub(super) fn lookup_workspace_mr_action_status(workspace_id: &str) -> Result<Fo
 pub(super) fn lookup_workspace_mr_check_insert_text(
     workspace_id: &str,
     item_id: &str,
+    runner: crate::forge::command::ForgeRunner,
 ) -> Result<String> {
-    let context = match load_gitlab_context(workspace_id)? {
+    let context = match load_gitlab_context(workspace_id, runner.clone())? {
         GitlabResolution::Ready(ctx) if ctx.published => ctx,
         GitlabResolution::Ready(_) | GitlabResolution::Initializing => {
             bail!("Workspace branch is not published");
@@ -216,7 +223,7 @@ pub(super) fn lookup_workspace_mr_check_insert_text(
             "GitLab account is not connected for this repository"
         ),
     };
-    let status = lookup_workspace_mr_action_status(workspace_id)?;
+    let status = lookup_workspace_mr_action_status(workspace_id, runner)?;
     let item = status
         .checks
         .into_iter()
@@ -233,8 +240,11 @@ pub(super) fn lookup_workspace_mr_check_insert_text(
     Ok(build_gitlab_check_insert_text(&item, trace.as_deref()))
 }
 
-pub(super) fn merge_workspace_mr(workspace_id: &str) -> Result<Option<ChangeRequestInfo>> {
-    let Some(context) = mutation_context(workspace_id, "merge")? else {
+pub(super) fn merge_workspace_mr(
+    workspace_id: &str,
+    runner: crate::forge::command::ForgeRunner,
+) -> Result<Option<ChangeRequestInfo>> {
+    let Some(context) = mutation_context(workspace_id, "merge", runner.clone())? else {
         return Ok(None);
     };
     ensure_gitlab_cli_ready(&context, "merge")?;
@@ -255,7 +265,7 @@ pub(super) fn merge_workspace_mr(workspace_id: &str) -> Result<Option<ChangeRequ
     if matches!(squash, SquashChoice::Squash) {
         args.extend(["--field", "squash=true"]);
     }
-    let output = glab_api(&context.remote.host, args)?;
+    let output = glab_api(&context.runner, &context.remote.host, args)?;
     if !output.success {
         let detail = command_detail(&output);
         tracing::warn!(
@@ -275,11 +285,14 @@ pub(super) fn merge_workspace_mr(workspace_id: &str) -> Result<Option<ChangeRequ
         iid = mr.iid,
         "GitLab MR merged"
     );
-    lookup_workspace_mr(workspace_id)
+    lookup_workspace_mr(workspace_id, runner)
 }
 
-pub(super) fn close_workspace_mr(workspace_id: &str) -> Result<Option<ChangeRequestInfo>> {
-    let Some(context) = mutation_context(workspace_id, "close")? else {
+pub(super) fn close_workspace_mr(
+    workspace_id: &str,
+    runner: crate::forge::command::ForgeRunner,
+) -> Result<Option<ChangeRequestInfo>> {
+    let Some(context) = mutation_context(workspace_id, "close", runner.clone())? else {
         return Ok(None);
     };
     ensure_gitlab_cli_ready(&context, "close")?;
@@ -296,6 +309,7 @@ pub(super) fn close_workspace_mr(workspace_id: &str) -> Result<Option<ChangeRequ
         mr.iid
     );
     let output = glab_api(
+        &context.runner,
         &context.remote.host,
         [
             "--method",
@@ -323,14 +337,18 @@ pub(super) fn close_workspace_mr(workspace_id: &str) -> Result<Option<ChangeRequ
         iid = mr.iid,
         "GitLab MR closed"
     );
-    lookup_workspace_mr(workspace_id)
+    lookup_workspace_mr(workspace_id, runner)
 }
 
 /// Common entry for the merge / close paths. `Ok(None)` means
 /// "preconditions not met" (caller short-circuits with `Ok(None)`).
 /// Mirrors `forge::github::mod::mutation_context`.
-fn mutation_context(workspace_id: &str, operation: &'static str) -> Result<Option<GitlabContext>> {
-    match load_gitlab_context(workspace_id)? {
+fn mutation_context(
+    workspace_id: &str,
+    operation: &'static str,
+    runner: crate::forge::command::ForgeRunner,
+) -> Result<Option<GitlabContext>> {
+    match load_gitlab_context(workspace_id, runner)? {
         GitlabResolution::Ready(ctx) if ctx.published => {
             tracing::info!(
                 workspace_id,

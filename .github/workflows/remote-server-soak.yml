@@ -1,0 +1,115 @@
+name: Remote server soak
+
+# Sustained-load soak test for the remote-runner SSH transport.
+#
+# Runs the ignored `soak_workspace_status_against_linux_container`
+# integration test for ~5 minutes against a real `helmor-server`
+# daemon in a Docker container. Samples the daemon's RSS every 100
+# iterations and asserts peak growth stays under the budget defined
+# in the test.
+#
+# Manual-dispatch only — this isn't on every push because (a) it's
+# wall-clock expensive (5+ min per arch) and (b) the bug class it
+# catches (transport leaks) is rare enough that nightly is plenty.
+#
+# Schedule: kick it off before cutting a release that touches anything
+# under `src-tauri/src/remote/` or as part of a regression hunt when
+# someone reports the daemon's RSS climbing over a long-running
+# session.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: remote-server-soak-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CI: true
+  CARGO_TERM_COLOR: always
+
+jobs:
+  soak:
+    name: Soak (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            service: helmor-test-linux-amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            service: helmor-test-linux-arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Build the E2E daemon image
+        run: |
+          docker compose -f src-tauri/tests/docker-e2e/compose.yml \
+            build ${{ matrix.service }}
+
+      - name: Read pinned Rust channel from rust-toolchain.toml
+        id: rust_channel
+        shell: bash
+        run: |
+          channel=$(awk -F '"' '/^channel/{print $2}' rust-toolchain.toml)
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b # master 2026-02
+        with:
+          toolchain: ${{ steps.rust_channel.outputs.channel }}
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.0
+        with:
+          workspaces: src-tauri
+          key: soak-${{ matrix.arch }}
+
+      - name: Install Tauri v2 Linux build deps
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            pkg-config
+
+      - name: Prepare helmor_lib build
+        run: mkdir -p sidecar/dist/vendor
+
+      - name: Run the soak
+        working-directory: src-tauri
+        env:
+          HELMOR_E2E_DOCKER: "1"
+          HELMOR_E2E_DOCKER_SERVICE: ${{ matrix.service }}
+          RUSTC_WRAPPER: ""
+        run: |
+          cargo test --test remote_docker_e2e \
+            soak_workspace_status_against_linux_container \
+            -- --ignored --nocapture --test-threads=1
+
+      - name: Run the reconnect-storm chaos test
+        working-directory: src-tauri
+        env:
+          HELMOR_E2E_DOCKER: "1"
+          HELMOR_E2E_DOCKER_SERVICE: ${{ matrix.service }}
+          RUSTC_WRAPPER: ""
+        run: |
+          # Different bug class from the soak — one long-lived connection
+          # vs. 10 reconnects in a row. Daemon RSS leaks tied to per-
+          # connection state (subscriber piles, pending-id maps) show up
+          # here but not in the soak.
+          cargo test --test remote_docker_e2e \
+            reconnect_storm_against_linux_container \
+            -- --ignored --nocapture --test-threads=1

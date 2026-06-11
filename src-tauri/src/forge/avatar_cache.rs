@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn write_atomic_creates_file_with_payload() {
-        let _lock = crate::data_dir::TEST_ENV_LOCK.lock().unwrap();
+        let _lock = crate::data_dir::lock_test_env();
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("foo.png");
         write_atomic(&path, b"hello").unwrap();
